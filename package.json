@@ -1,0 +1,27 @@
+{
+  "name": "qualidji",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SaaS platform for ISO compliance management (ISO 9001:2015 & ISO 22000:2018) - Djibouti market",
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm --filter web build",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "test:e2e": "pnpm --filter web test:e2e",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,sql}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,sql}\"",
+    "supabase:migrate": "supabase db push",
+    "supabase:seed": "supabase db reset",
+    "supabase:test": "supabase test db",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3",
+    "prettier-plugin-tailwindcss": "^0.6.8"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "pnpm@9.12.0"
+}

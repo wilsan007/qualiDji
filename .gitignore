@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Next.js
+.next/
+out/
+build/
+dist/
+
+# Supabase
+supabase/.branches
+supabase/.temp
+supabase/.env
+
+# Environment
+.env
+.env.local
+.env.*.local
+*.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+coverage/
+playwright-report/
+test-results/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Misc
+.turbo/
+*.tsbuildinfo

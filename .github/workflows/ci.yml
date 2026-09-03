@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  lint-and-typecheck:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: qualidji/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: qualidji
+        run: pnpm install --frozen-lockfile
+
+      - name: Check formatting
+        working-directory: qualidji
+        run: pnpm format:check
+
+      - name: Lint
+        working-directory: qualidji
+        run: pnpm lint
+
+      - name: Type check
+        working-directory: qualidji
+        run: pnpm typecheck
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: qualidji/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: qualidji
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests
+        working-directory: qualidji
+        run: pnpm test
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: npm audit
+        working-directory: qualidji
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm audit --audit-level=high || true
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [lint-and-typecheck, test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: qualidji/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: qualidji
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        working-directory: qualidji
+        run: pnpm build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co' }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-key' }}
