@@ -282,6 +282,45 @@ fi
 check 'QM GET /ai/interventions → 200 (journal R5)'        200       "$QM_TOKEN"  GET /ai/interventions
 check 'OP GET /ai/interventions → 403 audit.export'        403       "$OP_TOKEN"  GET /ai/interventions
 
+echo "-- §8.6 Documents contrôlés + RAG §7.6 --"
+check 'OP POST /documents → 403 document.create'           403       "$OP_TOKEN"  POST /documents '{"title":"X","doc_type":"procedure"}'
+DOC_KEY="E2E_RBAC_DOC_$(date +%s)"
+DOC_BODY="{\"doc_key\":\"$DOC_KEY\",\"title\":\"Procédure E2E\",\"doc_type\":\"procedure\",\"classification\":\"internal\",\"excerpt\":\"Contrôle final selon la procédure QC-01; anomalie déclenche une non-conformité.\"}"
+CODE=$(curl -s -m 20 -o "$BODY_FILE" -w '%{http_code}' -X POST "$API_URL/documents" -H "Authorization: Bearer $QM_TOKEN" -H 'Content-Type: application/json' -d "$DOC_BODY")
+DOC_ID=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("document",{}).get("id",""))' "$BODY_FILE" 2>/dev/null)
+if [ "$CODE" = 201 ] && [ -n "$DOC_ID" ]; then
+  PASS=$((PASS + 1)); echo "  ✓ QM POST /documents → 201 (draft $DOC_KEY)"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ QM POST /documents → $CODE | $(head -c 120 "$BODY_FILE")"
+fi
+check 'OP GET /documents/<draft> → 403 (masqué)'           403       "$OP_TOKEN"  GET "/documents/$DOC_ID"
+check 'QM PUT draft → 200'                                 200       "$QM_TOKEN"  PUT "/documents/$DOC_ID" "$DOC_BODY"
+check 'QM submit → 200 in_review'                          200       "$QM_TOKEN"  POST "/documents/$DOC_ID/submit" '{}'
+check 'OP approve → 403 document.approve'                  403       "$OP_TOKEN"  POST "/documents/$DOC_ID/approve" '{}'
+check 'TA approve → 200 published'                         200       "$TA_TOKEN"  POST "/documents/$DOC_ID/approve" '{}'
+CODE=$(curl -s -m 20 "$API_URL/documents" -H "Authorization: Bearer $OP_TOKEN" | python3 -c "import sys,json;print('oui' if any(d['doc_key']=='$DOC_KEY' for d in json.load(sys.stdin).get('documents',[])) else 'non')" 2>/dev/null)
+if [ "$CODE" = "oui" ]; then
+  PASS=$((PASS + 1)); echo "  ✓ OP voit le document publié dans la liste"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ document publié absent de la liste OP"
+fi
+# RAG §7.6 : la guidance référence le document publié du tenant
+CODE=$(curl -s -m 20 -o "$BODY_FILE" -w '%{http_code}' -X POST "$API_URL/ai/guidance" -H "Authorization: Bearer $OP_TOKEN" -H 'Content-Type: application/json' -d '{"actionId":"ACT_CTX_001","context":{}}')
+if [ "$CODE" = 200 ] && grep -q "$DOC_ID" "$BODY_FILE"; then
+  PASS=$((PASS + 1)); echo "  ✓ RAG : guidance source du document publié (§7.6)"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ RAG sans document → $CODE | $(head -c 120 "$BODY_FILE")"
+fi
+check 'QM duplicate → 201 (V2 brouillon)'                   201       "$QM_TOKEN"  POST "/documents/$DOC_ID/duplicate" '{"change_reason":"E2E remplacement"}'
+DOC_V2_ID=$(curl -s -m 20 "$API_URL/documents?include_all=1" -H "Authorization: Bearer $TA_TOKEN" | python3 -c "import sys,json;print(next((d['id'] for d in json.load(sys.stdin).get('documents',[]) if d['doc_key']=='$DOC_KEY' and d['version']==2),''))" 2>/dev/null)
+if [ -n "$DOC_V2_ID" ]; then
+  check 'TA DELETE V2 draft → 204'                         204       "$TA_TOKEN"  DELETE "/documents/$DOC_V2_ID" '{}'
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ V2 introuvable (include_all)"
+fi
+check 'TA deprecate V1 → 200'                              200       "$TA_TOKEN"  POST "/documents/$DOC_ID/deprecate" '{"change_reason":"E2E clôture"}'
+check 'TA DELETE V1 déprécié → 204'                        204       "$TA_TOKEN"  DELETE "/documents/$DOC_ID" '{}'
+
 echo "-- session : GET /me (permissions pour le gating frontend) --"
 check 'OP GET /me → 200 avec permissions'                      200        "$OP_TOKEN"  GET /me
 check 'QM GET /me → 200'                                       200        "$QM_TOKEN"  GET /me

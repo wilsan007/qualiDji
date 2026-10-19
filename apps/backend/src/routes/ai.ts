@@ -23,8 +23,27 @@ const guidanceInput = z.object({
   context: z.record(z.any()).default({}),
 })
 
-/** RAG-lite (§7.6) : corpus = référentiel global (requirements liés à la clause). */
-async function buildCorpus(clause: string | null): Promise<CorpusSource[]> {
+/** RAG (§7.6) : corpus = documents PUBLIÉS du tenant (filtrés serveur, R7) +
+ * référentiel global (requirements liés à la clause). Seuls les documents
+ * publiés et effectifs entrent — jamais d autre tenant, jamais de brouillon. */
+async function buildCorpus(tenantId: string, clause: string | null): Promise<CorpusSource[]> {
+  const { data: docs } = await supabaseAdmin
+    .from('documents')
+    .select('id, doc_key, title, excerpt, version, effective_from')
+    .eq('tenant_id', tenantId)
+    .eq('status', 'published')
+    .order('effective_from', { ascending: false })
+    .limit(5)
+  const docSources: CorpusSource[] = (docs ?? [])
+    .filter((d) => !d.effective_from || new Date(d.effective_from) <= new Date())
+    .map((d) => ({
+      object_type: 'document',
+      object_id: d.id,
+      title: `${d.title} (v${d.version}, ${d.doc_key})`,
+      excerpt: (d.excerpt ?? '').slice(0, 400),
+      version: d.version,
+    }))
+
   const { data } = await supabaseAdmin
     .from('requirements')
     .select('id, clause, title, source_ref')
@@ -32,13 +51,14 @@ async function buildCorpus(clause: string | null): Promise<CorpusSource[]> {
   const rows = (data ?? []).filter((r) =>
     clause ? String(r.clause ?? '').startsWith(clause.split('.')[0] ?? '') : true
   )
-  return rows.slice(0, 5).map((r) => ({
+  const reqSources: CorpusSource[] = rows.slice(0, 5).map((r) => ({
     object_type: 'control',
     object_id: r.id,
     title: r.title ?? r.id,
     excerpt: r.source_ref ?? '',
     version: 1,
   }))
+  return [...docSources, ...reqSources]
 }
 
 router.post(
@@ -99,7 +119,7 @@ router.post(
 
     // ── §7.3.2-3 : contexte minimal + corpus (R7 : filtré serveur) ─────────
     const wf = action.workflow_definitions as any
-    const corpus = await buildCorpus(wf?.standard_clause ?? null)
+    const corpus = await buildCorpus(tenantId, wf?.standard_clause ?? null)
     const validSourceIds = new Set<string>([
       ...corpus.map((c) => c.object_id),
       ...steps.map((s) => s.id),

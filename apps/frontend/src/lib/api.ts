@@ -327,3 +327,47 @@ export const reportsApi = {
   exportNcCapa: () =>
     downloadCsv('/reports/nc-capa.csv', `registre_nc_capa_${new Date().toISOString().slice(0, 10)}.csv`),
 }
+
+// §8.6 Documents contrôlés
+export interface ControlledDocument {
+  id: string
+  doc_key: string
+  title: string
+  doc_type: string
+  classification: string
+  owner_role: string
+  version: number
+  status: 'draft' | 'in_review' | 'published' | 'deprecated' | 'archived'
+  excerpt: string | null
+  effective_from: string | null
+  approved_at: string | null
+  change_reason: string | null
+  review_comment: string | null
+  supersedes_id: string | null
+  created_at: string
+}
+
+export interface DocumentPayload {
+  doc_key?: string
+  title: string
+  doc_type: string
+  classification: string
+  owner_role: string
+  excerpt: string | null
+}
+
+export const documentsApi = {
+  list: (includeAll = false) => apiFetch('/documents' + (includeAll ? '?include_all=1' : '')),
+  get: (id: string) => apiFetch(`/documents/${id}`),
+  create: (body: DocumentPayload) => apiFetch('/documents', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id: string, body: DocumentPayload) => apiFetch(`/documents/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  submit: (id: string) => apiFetch(`/documents/${id}/submit`, { method: 'POST' }),
+  approve: (id: string) => apiFetch(`/documents/${id}/approve`, { method: 'POST' }),
+  reject: (id: string, comment: string) =>
+    apiFetch(`/documents/${id}/reject`, { method: 'POST', body: JSON.stringify({ comment }) }),
+  duplicate: (id: string, change_reason: string) =>
+    apiFetch(`/documents/${id}/duplicate`, { method: 'POST', body: JSON.stringify({ change_reason }) }),
+  deprecate: (id: string, change_reason: string) =>
+    apiFetch(`/documents/${id}/deprecate`, { method: 'POST', body: JSON.stringify({ change_reason }) }),
+  remove: (id: string) => apiFetch(`/documents/${id}`, { method: 'DELETE' }),
+}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ClipboardList, LayoutDashboard, LogOut, ShieldAlert, Activity, Menu, X, Bell, Table2, LibraryBig, Users2, FileBarChart2 } from 'lucide-react'
+import { ClipboardList, LayoutDashboard, LogOut, ShieldAlert, Activity, Menu, X, Bell, Table2, LibraryBig, Users2, FileBarChart2, FileText } from 'lucide-react'
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useAuthStore } from '@/stores/auth'
 import { usePermissions } from '@/hooks/usePermissions'
@@ -27,6 +27,7 @@ const NAV_ITEMS: NavItem[] = [
   { path: '/workflows', label: 'Bibliothèque WF', icon: LibraryBig, perm: 'workflow.read' },
   { path: '/users', label: 'Utilisateurs', icon: Users2, perm: 'user.manage' },
   { path: '/reports', label: 'Rapports', icon: FileBarChart2, perm: 'action.approve' },
+  { path: '/documents', label: 'Documents', icon: FileText, perm: 'document.read' },
 ]
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
@@ -92,6 +93,7 @@ function pageTitle(pathname: string): string {
   if (pathname === '/workflows') return 'Bibliothèque de workflows'
   if (pathname === '/users') return 'Utilisateurs du tenant'
   if (pathname === '/reports') return 'Rapports & préparation d’audit'
+  if (pathname === '/documents') return 'Documents contrôlés'
   return 'QualiDji'
 }
 

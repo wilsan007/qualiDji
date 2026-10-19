@@ -19,6 +19,7 @@ import { workflowsRouter } from './routes/workflows'
 import { usersRouter } from './routes/users'
 import { notificationsRouter } from './routes/notifications'
 import { reportsRouter } from './routes/reports'
+import { documentsRouter } from './routes/documents'
 import { requireAuth, AuthedRequest } from './middleware/auth'
 import { supabaseAdmin } from './lib/supabase'
 import { rateLimit } from './lib/rateLimiter'
@@ -78,6 +79,8 @@ app.use('/api/v1/users', usersRouter)
 app.use('/api/v1/notifications', notificationsRouter)
 // Module H — Rapports et préparation d'audit (V5 §5.8)
 app.use('/api/v1/reports', reportsRouter)
+// §8.6 Documents contrôlés
+app.use('/api/v1/documents', documentsRouter)
 
 // 404
 app.use((_req, res) => {
