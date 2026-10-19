@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    name: Typecheck · Tests · Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (backend + frontend)
+        run: pnpm -r typecheck
+
+      # Tests unitaires offline : matrice, RBAC (13), contrôles IA (30), rate limiter.
+      # Les tests n'exigent ni DB ni secret — conformes §16.
+      - name: Tests unitaires backend
+        run: pnpm --filter @iso/backend test
+
+      - name: Build frontend
+        run: pnpm --filter @iso/frontend build
+
+      # L'E2E (scripts/e2e_rbac.sh, ~71 checks) exige Supabase + comptes de test :
+      # il reste scripté et manuel (voir README) — à automatiser via un job
+      # supabase start quand l'infra CI le supportera.

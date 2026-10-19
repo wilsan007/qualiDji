@@ -21,6 +21,7 @@ import { notificationsRouter } from './routes/notifications'
 import { reportsRouter } from './routes/reports'
 import { requireAuth, AuthedRequest } from './middleware/auth'
 import { supabaseAdmin } from './lib/supabase'
+import { rateLimit } from './lib/rateLimiter'
 
 const app: express.Application = express()
 const PORT = Number(process.env.PORT ?? 4000)
@@ -53,7 +54,9 @@ app.get('/api/v1/me', requireAuth, async (req, res) => {
   res.json({ user: r.user, permissions })
 })
 
-// API v1
+// API v1 — limitation de débit (§15) : fenêtre fixe par IP, generous enough
+// pour le dev et l'E2E (~80 requêtes/run) ; 429 + Retry-After au-delà.
+app.use('/api/v1', rateLimit({ limit: 600, windowMs: 10 * 60 * 1000 }))
 app.use('/api/v1/tenants', tenantsRouter)
 app.use('/api/v1/auth', (req, res) => {
   res.status(404).json({ error: 'auth routes handled by Supabase client' })
