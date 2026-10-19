@@ -1,0 +1,99 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─────────────────────────────────────────────
+   Base — thème QualiDji
+   ───────────────────────────────────────────── */
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-900 font-sans;
+  }
+
+  /* Focus visible cohérent partout (accessibilité) */
+  *:focus-visible {
+    @apply outline-none ring-2 ring-blue-500/60 ring-offset-2 ring-offset-white;
+  }
+
+  /* Scrollbars discrètes */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    @apply bg-slate-300 rounded-full;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    @apply bg-slate-400;
+  }
+}
+
+/* ─────────────────────────────────────────────
+   Composants réutilisables
+   ───────────────────────────────────────────── */
+@layer components {
+  .card {
+    @apply bg-white rounded-xl border border-slate-200 shadow-sm;
+  }
+
+  .input {
+    @apply w-full px-3.5 py-2.5 text-sm bg-white border border-slate-300 rounded-lg
+      placeholder:text-slate-400 transition
+      focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none
+      disabled:bg-slate-50 disabled:text-slate-500;
+  }
+
+  .label {
+    @apply block text-sm font-medium text-slate-700 mb-1.5;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap;
+  }
+
+  .page-title {
+    @apply text-2xl font-bold tracking-tight text-slate-900;
+  }
+
+  .page-subtitle {
+    @apply text-sm text-slate-500 mt-1;
+  }
+
+  .empty-state {
+    @apply flex flex-col items-center justify-center px-6 py-14 text-center;
+  }
+}
+
+/* ─────────────────────────────────────────────
+   Animations d'entrée
+   ───────────────────────────────────────────── */
+@layer utilities {
+  .animate-enter {
+    animation: enter 0.25s ease-out both;
+  }
+  @keyframes enter {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}

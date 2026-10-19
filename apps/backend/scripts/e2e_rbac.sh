@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# ============================================================================
+# E2E RBAC V5 §3.2/§3.3 — qualidji
+#
+# Vérifie requirePermission sur les routes backend avec deux identités :
+#   - QM : quality_manager (audit.export, action.approve, capa.close, evidence.export…)
+#   - OP : operator (action.read/execute/submit, SANS audit.export/approve/export)
+#
+# Usage :  ./scripts/e2e_rbac.sh            (local)
+# Env :    API_URL     défaut http://localhost:4000/api/v1
+#          AUTH_URL    défaut http://127.0.0.1:54341/auth/v1
+#          ANON_KEY    défaut : extraite de apps/backend/.env
+#          RBAC_QM_EMAIL / RBAC_OP_EMAIL / RBAC_PASSWORD (défaut Qualidji!RBAC2026)
+# Retour : 0 si tous les checks passent.
+# ============================================================================
+set -u
+
+API_URL="${API_URL:-http://localhost:4000/api/v1}"
+AUTH_URL="${AUTH_URL:-http://127.0.0.1:54341/auth/v1}"
+RBAC_QM_EMAIL="${RBAC_QM_EMAIL:-rbac.test@qualidji.fr}"
+RBAC_OP_EMAIL="${RBAC_OP_EMAIL:-operator.test@qualidji.fr}"
+RBAC_PASSWORD="${RBAC_PASSWORD:-Qualidji!RBAC2026}"
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -z "${ANON_KEY:-}" ]; then
+  ANON_KEY="$(grep '^SUPABASE_ANON_KEY=' "$DIR/../.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+fi
+if [ -z "${ANON_KEY:-}" ]; then
+  echo "ERREUR : ANON_KEY introuvable (définissez ANON_KEY ou renseignez apps/backend/.env)" >&2
+  exit 1
+fi
+
+BODY_FILE="$(mktemp)"
+trap 'rm -f "$BODY_FILE"' EXIT
+
+login() {
+  local email="$1" resp tok
+  resp="$(curl -s -m 20 -X POST "$AUTH_URL/token?grant_type=password" \
+    -H 'Content-Type: application/json' -H "apikey: $ANON_KEY" \
+    --data-binary "{\"email\":\"$email\",\"password\":\"$RBAC_PASSWORD\"}")"
+  tok="$(printf '%s' "$resp" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')"
+  if [ -z "$tok" ]; then
+    echo "ERREUR login $email : $(printf '%s' "$resp" | head -c 200)" >&2
+    exit 1
+  fi
+  printf '%s' "$tok"
+}
+
+PASS=0
+FAIL=0
+
+# check <nom> <want> <token> <method> <path> [body-json]
+#   want positif : codes séparés par '|'   ex. '200' ou '400|404'
+#   want négatif : '!' + codes interdits   ex. '!403,500' (tout sauf 403 et 500)
+check() {
+  local name="$1" want="$2" tok="$3" method="$4" path="$5" body="${6:-}"
+  local args code matched c
+  args=(-s -m 20 -o "$BODY_FILE" -w '%{http_code}' -X "$method" "$API_URL$path")
+  if [ -n "$tok" ]; then args+=(-H "Authorization: Bearer $tok"); fi
+  if [ -n "$body" ]; then args+=(-H 'Content-Type: application/json' --data-binary "$body"); fi
+  code="$(curl "${args[@]}")"
+
+  matched=0
+  case "$want" in
+    '!'*)
+      matched=1
+      local rest="${want#\!}" one
+      while [ -n "$rest" ]; do
+        one="${rest%%,*}"
+        [ "$code" = "$one" ] && { matched=0; break; }
+        case "$rest" in *,*) rest="${rest#*,}" ;; *) rest="" ;; esac
+      done
+      ;;
+    *)
+      local alt rest="$want"
+      while [ -n "$rest" ]; do
+        alt="${rest%%|*}"
+        [ "$code" = "$alt" ] && { matched=1; break; }
+        case "$rest" in *'|'*) rest="${rest#*|}" ;; *) rest="" ;; esac
+      done
+      ;;
+  esac
+
+  if [ "$matched" = 1 ]; then
+    PASS=$((PASS + 1))
+    printf '  ✓ %-64s → %s\n' "$name" "$code"
+  else
+    FAIL=$((FAIL + 1))
+    printf '  ✗ %-64s → reçu %s, attendu %s | %s\n' \
+      "$name" "$code" "$want" "$(head -c 160 "$BODY_FILE" | tr -d '\n')"
+  fi
+}
+
+echo "== E2E RBAC V5 §3.2/§3.3 =="
+echo "API  : $API_URL"
+echo "AUTH : $AUTH_URL"
+echo "-- Logins --"
+QM_TOKEN="$(login "$RBAC_QM_EMAIL")"
+OP_TOKEN="$(login "$RBAC_OP_EMAIL")"
+echo "  ✓ QM ($RBAC_QM_EMAIL) — token obtenu"
+echo "  ✓ OP ($RBAC_OP_EMAIL) — token obtenu"
+
+FAKE_UUID="00000000-0000-0000-0000-000000000000"
+
+echo "-- Authentification --"
+check '401 sans token — GET /actions/assigned'                 401        ''           GET /actions/assigned
+check '401 sans token — GET /audit-log'                        401        ''           GET /audit-log
+
+echo "-- action.read (OP = OK) --"
+check 'OP GET /actions/assigned → 200'                         200        "$OP_TOKEN"  GET /actions/assigned
+check 'OP GET /actions/<fake> → pas 403/500 (tenant scoping)'  '!403,500' "$OP_TOKEN"  GET "/actions/$FAKE_UUID"
+check 'QM GET /actions/assigned → 200'                         200        "$QM_TOKEN"  GET /actions/assigned
+
+echo "-- audit.export (OP = interdit, QM = autorisé) --"
+check 'OP GET /audit-log → 403 audit.export'                   403        "$OP_TOKEN"  GET /audit-log
+check 'QM GET /audit-log → 200'                                200        "$QM_TOKEN"  GET /audit-log
+check 'OP GET /dashboard/audit-readiness → 403'                403        "$OP_TOKEN"  GET /dashboard/audit-readiness
+check 'QM GET /dashboard/audit-readiness → 200'                200        "$QM_TOKEN"  GET /dashboard/audit-readiness
+
+echo "-- evidence.export (OP = interdit) --"
+check 'OP GET /matrix/export → 403 evidence.export'            403        "$OP_TOKEN"  GET /matrix/export
+check 'QM GET /matrix/export → 200 (CSV)'                      '200|204'  "$QM_TOKEN"  GET /matrix/export
+
+echo "-- action.approve : création de NC --"
+check 'OP POST /nonconformities {} → 403 action.approve'       403        "$OP_TOKEN"  POST /nonconformities '{}'
+check 'QM POST /nonconformities {} → 400 (permission passée)'  400        "$QM_TOKEN"  POST /nonconformities '{}'
+
+echo "-- capa.close : CAPA / suppression de preuve --"
+check 'OP POST /nonconformities/<fake>/capa → 403 capa.close'  403        "$OP_TOKEN"  POST "/nonconformities/$FAKE_UUID/capa" '{}'
+check 'QM POST /nonconformities/<fake>/capa → pas 403/500'     '!403,500' "$QM_TOKEN"  POST "/nonconformities/$FAKE_UUID/capa" '{}'
+check 'OP DELETE /evidence/<fake> → 403 capa.close'            403        "$OP_TOKEN"  DELETE "/evidence/$FAKE_UUID"
+check 'QM DELETE /evidence/<fake> → pas 403/500 (404 attendu)' '!403,500' "$QM_TOKEN"  DELETE "/evidence/$FAKE_UUID"
+
+echo "-- evidence.read / action.submit --"
+check 'OP GET /evidence/<fake> → pas 403/500'                  '!403,500' "$OP_TOKEN"  GET "/evidence/$FAKE_UUID"
+# Ce endpoint répond 403 'tenant isolation' (et non 404) quand l'action parente n'existe pas :
+# l'important est que la permission action.submit ait été acceptée (pas d'erreur de permission).
+code=$(curl -s -m 20 -o "$BODY_FILE" -w '%{http_code}' -X POST "$API_URL/steps/$FAKE_UUID/steps/$FAKE_UUID/submit" \
+  -H "Authorization: Bearer $OP_TOKEN" -H 'Content-Type: application/json' -d '{"value":"t"}')
+body=$(cat "$BODY_FILE" 2>/dev/null || true)
+if [ "$code" = 404 ] || { [ "$code" = 403 ] && printf '%s' "$body" | grep -q 'tenant isolation'; }; then
+  PASS=$((PASS + 1)); echo "  ✓ OP POST /steps/<fake>/steps/<fake>/submit → $code (permission acceptée, garde tenant)"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ OP POST /steps/<fake>/steps/<fake>/submit → reçu $code, attendu 404 ou 403 tenant isolation | $body"
+fi
+
+echo "-- workflow.approve : validations matrice --"
+check 'OP POST /matrix/validations {} → 403 workflow.approve'  403        "$OP_TOKEN"  POST /matrix/validations '{}'
+check 'QM POST /matrix/validations {} → 400 (permission passée)' 400      "$QM_TOKEN"  POST /matrix/validations '{}'
+
+echo "-- workflow.read : lecture matrice --"
+check 'OP GET /matrix/requirements → 200'                      200        "$OP_TOKEN"  GET /matrix/requirements
+check 'OP GET /matrix/na-register → 200'                       200        "$OP_TOKEN"  GET /matrix/na-register
+check 'QM GET /matrix/coverage → 200'                          200        "$QM_TOKEN"  GET /matrix/coverage
+
+echo "-- tenant.read (migration 0007) --"
+check 'OP GET /tenants/me → 200 tenant.read'                   200        "$OP_TOKEN"  GET /tenants/me
+check 'QM GET /tenants/me → 200'                               200        "$QM_TOKEN"  GET /tenants/me
+
+echo "-- tableaux de bord par rôle --"
+check 'OP GET /dashboard/employee → 200'                       200        "$OP_TOKEN"  GET /dashboard/employee
+check 'QM GET /dashboard/manager → 200 (action.assign)'        200        "$QM_TOKEN"  GET /dashboard/manager
+check 'QM GET /dashboard/quality → 200 (action.approve)'       200        "$QM_TOKEN"  GET /dashboard/quality
+check 'OP GET /dashboard/quality → 403 action.approve'         403        "$OP_TOKEN"  GET /dashboard/quality
+
+echo "-- session : GET /me (permissions pour le gating frontend) --"
+check 'OP GET /me → 200 avec permissions'                      200        "$OP_TOKEN"  GET /me
+check 'QM GET /me → 200'                                       200        "$QM_TOKEN"  GET /me
+if printf '%s' "$(curl -s -m 20 "$API_URL/me" -H "Authorization: Bearer $OP_TOKEN")" | grep -q 'audit.export'; then
+  FAIL=$((FAIL + 1)); echo "  ✗ OP /me ne doit PAS contenir audit.export"
+else
+  PASS=$((PASS + 1)); echo "  ✓ OP /me : audit.export absent (permissions propres au rôle)"
+fi
+
+echo
+echo "Résultat E2E RBAC : $PASS réussis, $FAIL échec(s)."
+[ "$FAIL" -eq 0 ] || exit 1

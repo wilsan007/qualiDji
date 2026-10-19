@@ -13,11 +13,10 @@ supabase/.branches
 supabase/.temp
 supabase/.env
 
-# Environment
+# Environment — secrets radiés (fournis via .env non commité)
 .env
 .env.local
 .env.*.local
-*.env
 
 # IDE
 .vscode/

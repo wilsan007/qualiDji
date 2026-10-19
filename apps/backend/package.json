@@ -1,0 +1,31 @@
+{
+  "name": "@iso/backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Backend Express — Module ISO 9001 IA Assistant Terrain",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc --noEmit",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx scripts/test_matrix_logic.ts && tsx scripts/test_rbac_permissions.ts",
+    "test:rbac": "tsx scripts/test_rbac_permissions.ts",
+    "test:e2e": "bash scripts/e2e_rbac.sh"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.46.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "express-async-errors": "^3.1.1",
+    "helmet": "^7.1.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.9.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

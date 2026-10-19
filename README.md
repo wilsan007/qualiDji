@@ -1,98 +1,51 @@
-# QualiDji
+# Compliance Execution Platform — Module ISO 9001 · IA Assistant Terrain
 
-SaaS platform for ISO compliance management (ISO 9001:2015 & ISO 22000:2018) for the Djibouti market.
+Spécification : `Specification_ISO9001_IA_Assistant_Terrain.docx` — Version 1.0 Août 2026
+Référentiel : ISO 9001 (Édition 6, 2026 — FDIS approuvé) / ISO 9001:2015 (structure HLS, clauses 4 à 10)
 
-## Languages
+## Principe fondamental
 
-The application supports 4 languages:
-- **Français** (fr) — default
-- **English** (en)
-- **العربية** (ar) — with RTL support
-- **Soomaali** (so)
+> L'IA ne génère PAS de workflows. Elle décompose, précise et guide l'exécution
+> des workflows métier déjà définis par le responsable qualité.
 
-## Tech Stack
+## Priorité absolue
 
-- **Frontend**: Next.js 15 (App Router), TypeScript, React 19, Tailwind CSS, shadcn/ui
-- **i18n**: next-intl with `[locale]` routing
-- **Backend**: Supabase (PostgreSQL 16, Auth, Storage, Realtime, Edge Functions)
-- **Testing**: Vitest (unit), Playwright (e2e), pgTAP (SQL)
-- **CI**: GitHub Actions
+Implémenter d'abord le workflow `WF_CONTEXT_ANALYSIS` (Clause 4.1) avec son
+action `ACT_CTX_001`, son guidage IA, et sa chaîne de preuve. Puis itérer
+clause par clause. Ne jamais coder l'IA avant un workflow métier stable et testé.
 
-## Project Structure
+## Stack (§7.1 spec)
+
+- **frontend** : React 18+, TypeScript strict, Vite, React Router v6, Tailwind CSS,
+  Zustand / React Query, React Hook Form + Zod, PWA + IndexedDB (dexie.js)
+- **backend** : Node.js 20+, TypeScript, Express, Zod, Supabase Auth
+- **database** : PostgreSQL 15+ hébergé sur Supabase — RLS obligatoire
+- **storage** : Supabase Storage, buckets privés uniquement, signed URLs max 1h
+- **ai** : interface `AIProvider` (OpenAI, Anthropic, ou local Ollama),
+  fallback templates statiques si provider down
+
+## Structure
 
 ```
-qualidji/
-├── apps/
-│   └── web/                    # Next.js application
-│       ├── app/[locale]/       # Locale-based routing
-│       │   ├── page.tsx        # Landing page
-│       │   ├── auth/           # Login, register, invite
-│       │   └── tenant/         # Tenant dashboard
-│       ├── components/         # UI components (shadcn/ui + custom)
-│       ├── i18n/               # next-intl configuration
-│       ├── lib/                # Utilities, Supabase clients, types
-│       ├── messages/           # Translation files (fr, en, ar, so)
-│       └── tests/              # Unit and e2e tests
-├── supabase/
-│   ├── migrations/             # SQL migrations
-│   ├── tests/                  # pgTAP tests
-│   └── config.toml             # Supabase configuration
-├── packages/                   # Shared packages (future)
-└── .github/workflows/          # CI configuration
+apps/
+  frontend/   # React + Vite + Tailwind + dexie (PWA terrain)
+  backend/    # Express + Zod + Supabase (API v1)
+supabase/
+  migrations/ # SQL versionnées — tables spec §5-6 + RLS §7.3
+  seeds/      # WF_CONTEXT_ANALYSIS + ACT_CTX_001 + prompts CTX_*
 ```
 
-## Getting Started
-
-### Prerequisites
-
-- Node.js 20+
-- pnpm 9+
-- Supabase CLI (optional, for local development)
-
-### Installation
+## Démarrage
 
 ```bash
-cd qualidji
 pnpm install
+cp apps/backend/.env.example apps/backend/.env   # même URL Supabase conservée
+cp apps/frontend/.env.example apps/frontend/.env
+pnpm dev
 ```
 
-### Environment
+## Règle absolue (§1.1)
 
-```bash
-cp apps/web/.env.example apps/web/.env.local
-# Edit .env.local with your Supabase credentials
-```
-
-### Development
-
-```bash
-pnpm dev          # Start Next.js dev server
-pnpm build        # Production build
-pnpm test         # Run unit tests
-pnpm test:e2e     # Run e2e tests
-pnpm lint         # Lint
-pnpm typecheck    # Type check
-```
-
-### Supabase (local)
-
-```bash
-cd supabase
-supabase start    # Start local Supabase
-supabase db push  # Apply migrations
-supabase test db  # Run pgTAP tests
-```
-
-## Development Plan
-
-9 phases / 24 sprints (2 weeks each) for 2 developers:
-
-- **Phase 0** (Sprints 1-2): Foundation, monorepo, auth, RLS
-- **Phase 1** (Sprints 3-4): Requirements engine, diagnostic
-- **Phase 2** (Sprints 5-7): Tasks, evidence, offline mobile
-- **Phase 3** (Sprints 8-9): Verification, anti-cheat, notifications
-- **Phase 4** (Sprints 10-12): ISO 9001 core + MVP
-- **Phase 5** (Sprints 13-14): ISO 9001 complements
-- **Phase 6** (Sprints 15-16): Adaptive guidance + AI assistant
-- **Phase 7** (Sprints 17-20): ISO 22000 / food safety
-- **Phase 8** (Sprints 21-24): External auditor portal, enterprise, industrialization
+Le système ne reproduit pas le texte intégral protégé de la norme ISO.
+Il stocke des identifiants, des mappings, des workflows métier et des preuves
+d'exécution.
