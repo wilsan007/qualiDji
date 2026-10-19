@@ -198,8 +198,9 @@ check 'TA GET /users → 200'                                200       "$TA_TOKE
 # Invitation : 201 attendu en local ; le GoTrue cloud applique une rate limit
 # d'emails (~1/h) → 'rate limit' accepté comme skip explicite (les checks
 # suivants n'en dépendent pas : le cycle utilise e2e.member pré-créé).
-# (e-mails sans point dans la partie locale : le GoTrue cloud rejette "a.b.c@d")
-E2E_INVITE="e2e-invite-$(date +%s)@qualidji.fr"
+# (GoTrue cloud : pas de tirets ni de points multiples dans la partie locale —
+# underscore validé empiriquement, le quota email reste géré par le skip)
+E2E_INVITE="e2e_test_$(date +%s)@qualidji.fr"
 CODE=$(curl -s -m 20 -o "$BODY_FILE" -w '%{http_code}' -X POST "$API_URL/users/invite" \
   -H "Authorization: Bearer $TA_TOKEN" -H 'Content-Type: application/json' \
   -d "{\"email\":\"$E2E_INVITE\",\"role\":\"reader\"}")
