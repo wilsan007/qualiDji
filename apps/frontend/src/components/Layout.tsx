@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { ClipboardList, LayoutDashboard, LogOut, ShieldAlert, Activity, Menu, X, Bell, Table2, LibraryBig, Users2 } from 'lucide-react'
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useAuthStore } from '@/stores/auth'
 import { usePermissions } from '@/hooks/usePermissions'
+import { notificationsApi, NotificationItem } from '@/lib/api'
 import { roleLabel, spaceForRole } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { LucideIcon } from 'lucide-react'
@@ -90,6 +91,134 @@ function pageTitle(pathname: string): string {
   return 'QualiDji'
 }
 
+const NOTIF_KIND_LABELS: Record<string, string> = {
+  'action.assigned': 'Action assignée',
+  'action.submitted': 'Action soumise',
+  'action.blocked': 'Action bloquée',
+  'nc.created': 'Non-conformité',
+  'workflow.in_review': 'Approbation requise',
+  'workflow.approved': 'Workflow publié',
+  'workflow.rejected': 'Workflow rejeté',
+}
+
+function timeAgo(iso: string): string {
+  const s = Math.max(1, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
+  if (s < 60) return 'à l’instant'
+  const m = Math.floor(s / 60)
+  if (m < 60) return `il y a ${m} min`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `il y a ${h} h`
+  return `il y a ${Math.floor(h / 24)} j`
+}
+
+/** Cloche du header (V5 §5.7) : compte non-lues, panneau, lien profond, mark-read. */
+function NotificationsBell() {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const [items, setItems] = useState<NotificationItem[]>([])
+  const [unread, setUnread] = useState(0)
+  const [open, setOpen] = useState(false)
+
+  const refresh = useCallback(async () => {
+    try {
+      const res = await notificationsApi.list()
+      setItems(res.notifications ?? [])
+      setUnread(res.unread_count ?? 0)
+    } catch {
+      /* silencieux : la cloche ne doit jamais casser le layout */
+    }
+  }, [])
+
+  useEffect(() => {
+    void refresh()
+    const id = window.setInterval(() => void refresh(), 60_000)
+    return () => window.clearInterval(id)
+  }, [refresh])
+
+  // Re-fetch à chaque navigation (les événements de la page précédente ont pu notifier)
+  useEffect(() => {
+    void refresh()
+  }, [location.pathname, refresh])
+
+  const onItemClick = async (n: NotificationItem) => {
+    if (!n.read_at) {
+      try {
+        await notificationsApi.markRead(n.id)
+      } catch { /* best-effort */ }
+    }
+    setOpen(false)
+    if (n.link) navigate(n.link)
+    else void refresh()
+  }
+
+  const onMarkAll = async () => {
+    try {
+      await notificationsApi.markAllRead()
+      await refresh()
+    } catch { /* best-effort */ }
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="relative p-2 text-slate-500 hover:bg-slate-100 rounded-lg transition-colors"
+        aria-label={`Notifications${unread ? ` (${unread} non lues)` : ''}`}
+      >
+        <Bell className="w-5 h-5" />
+        {unread > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white text-[10px] font-bold flex items-center justify-center">
+            {unread > 9 ? '9+' : unread}
+          </span>
+        )}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 z-50 mt-2 w-80 sm:w-96 bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-100">
+              <span className="text-sm font-semibold text-slate-800">Notifications</span>
+              {unread > 0 && (
+                <button onClick={() => void onMarkAll()} className="text-xs text-blue-600 hover:text-blue-800 font-medium">
+                  Tout marquer lu
+                </button>
+              )}
+            </div>
+            <div className="max-h-96 overflow-y-auto">
+              {items.length === 0 ? (
+                <p className="text-sm text-slate-400 text-center py-8">Aucune notification.</p>
+              ) : (
+                items.map((n) => (
+                  <button
+                    key={n.id}
+                    onClick={() => void onItemClick(n)}
+                    className={cn(
+                      'w-full text-left px-4 py-3 border-b border-slate-50 hover:bg-slate-50 transition-colors',
+                      !n.read_at && 'bg-blue-50/50'
+                    )}
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <span className={cn('mt-1.5 w-2 h-2 rounded-full shrink-0', n.read_at ? 'bg-slate-200' : 'bg-blue-500')} />
+                      <div className="min-w-0">
+                        <p className={cn('text-xs', n.read_at ? 'text-slate-500' : 'text-slate-800 font-medium')}>
+                          {NOTIF_KIND_LABELS[n.kind] ?? n.kind}
+                        </p>
+                        <p className="text-sm text-slate-700 truncate">{n.title}</p>
+                        {n.body && <p className="text-xs text-slate-400 truncate">{n.body}</p>}
+                        <p className="text-[11px] text-slate-400 mt-0.5">{timeAgo(n.created_at)}</p>
+                      </div>
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 export default function Layout() {
   const { user } = useAuthStore()
   const location = useLocation()
@@ -160,12 +289,7 @@ export default function Layout() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
-            <button
-              className="relative p-2 text-slate-500 hover:bg-slate-100 rounded-lg transition-colors"
-              aria-label="Notifications"
-            >
-              <Bell className="w-5 h-5" />
-            </button>
+            <NotificationsBell />
             <div className="flex items-center gap-2.5 pl-3 border-l border-slate-200">
               <div className="text-right hidden sm:block">
                 <p className="text-sm font-medium text-slate-900 truncate max-w-[180px]">

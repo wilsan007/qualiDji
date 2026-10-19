@@ -3,6 +3,7 @@ import type { Router as ExpressRouter } from 'express'
 import { z } from 'zod'
 import { requireAuth, requireTenant, requirePermission, requireAnyPermission, AuthedRequest } from '../middleware/auth'
 import { supabaseAdmin } from '../lib/supabase'
+import { notifyByRoles, notifyUsers } from '../lib/notify'
 
 const router: ExpressRouter = Router()
 
@@ -79,6 +80,18 @@ router.post('/:id/submit', requireAuth, requireTenant, requirePermission('action
     .select()
     .single()
   if (error || !action) return res.status(404).json({ error: 'action not found' })
+  // Module G : approbation requise — prévient l'autorité qualité (§5.7)
+  void notifyByRoles(['quality_manager'], {
+    tenantId: user.tenant_id!,
+    kind: 'action.submitted',
+    dedupeKey: `action.submitted:${action.id}`,
+    title: `Action soumise : ${action.title}`,
+    body: 'Validation requise',
+    link: `/workflow/${action.id}`,
+    entity: 'action',
+    entityId: action.id,
+    excludeUserIds: [user.id],
+  })
   res.json({ action })
 })
 
@@ -95,6 +108,17 @@ router.post('/:id/block', requireAuth, requireTenant, requireAnyPermission(['act
     .select()
     .single()
   if (error || !action) return res.status(404).json({ error: 'action not found' })
+  // Module G : action bloquée — alerte l'autorité qualité (§5.7)
+  void notifyByRoles(['quality_manager'], {
+    tenantId: user.tenant_id!,
+    kind: 'action.blocked',
+    dedupeKey: `action.blocked:${action.id}`,
+    title: `Action bloquée : ${action.title}`,
+    link: `/workflow/${action.id}`,
+    entity: 'action',
+    entityId: action.id,
+    excludeUserIds: [user.id],
+  })
   res.json({ action })
 })
 
@@ -131,6 +155,19 @@ router.post('/:id/exception', requireAuth, requireTenant, requireAnyPermission([
   if (error) return res.status(400).json({ error: error.message })
 
   await supabaseAdmin.from('actions').update({ status: 'blocked' }).eq('id', id).eq('tenant_id', user.tenant_id)
+
+  // Module G : NC ouverte via exception — prévient qualité + admin tenant (§5.7)
+  void notifyByRoles(['quality_manager', 'tenant_admin'], {
+    tenantId: user.tenant_id!,
+    kind: 'nc.created',
+    dedupeKey: `nc.created:${nc.id}`,
+    title: `Non-conformité déclarée : ${nc.title}`,
+    body: `Sévérité : ${severity}`,
+    link: '/nc',
+    entity: 'nonconformity',
+    entityId: nc.id,
+    excludeUserIds: [user.id],
+  })
 
   res.status(201).json({ nonconformity: nc })
 })

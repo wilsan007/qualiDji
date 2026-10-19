@@ -4,6 +4,7 @@ import { randomBytes } from 'crypto'
 import { z } from 'zod'
 import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '../middleware/auth'
 import { supabaseAdmin } from '../lib/supabase'
+import { notifyByRoles, notifyUsers } from '../lib/notify'
 
 /**
  * Module B — Bibliothèque de workflows (V5 §5.2 / §6.1 / §6.3).
@@ -283,6 +284,18 @@ router.post('/:id/submit', requireAuth, requireTenant, requirePermission('workfl
     .eq('id', wf.id)
   if (error) return res.status(400).json({ error: error.message })
   audit(req, 'workflow.submit', wf.id)
+  // Module G : revue requise — prévient les admins du tenant (§5.7)
+  void notifyByRoles(['tenant_admin'], {
+    tenantId: req.user!.tenant_id!,
+    kind: 'workflow.in_review',
+    dedupeKey: `workflow.submit:${wf.id}:v${wf.version}`,
+    title: `Workflow à approuver : ${wf.name}`,
+    body: 'Soumis en revue',
+    link: '/workflows',
+    entity: 'workflow_definition',
+    entityId: wf.id,
+    excludeUserIds: [req.user?.id],
+  })
   res.json({ workflow: { ...wf, status: 'in_review' } })
 })
 
@@ -307,6 +320,17 @@ router.post('/:id/approve', requireAuth, requireTenant, requirePermission('workf
     .eq('id', wf.id)
   if (error) return res.status(400).json({ error: error.message })
   audit(req, 'workflow.approve', wf.id)
+  // Module G : publication — prévient le créateur (§5.7)
+  void notifyUsers([wf.created_by], {
+    tenantId: req.user!.tenant_id!,
+    kind: 'workflow.approved',
+    dedupeKey: `workflow.approved:${wf.id}:v${wf.version}`,
+    title: `Workflow publié : ${wf.name}`,
+    link: '/workflows',
+    entity: 'workflow_definition',
+    entityId: wf.id,
+    excludeUserIds: [req.user?.id],
+  })
   res.json({ workflow: { ...wf, status: 'published', is_active: true } })
 })
 
@@ -329,6 +353,18 @@ router.post('/:id/reject', requireAuth, requireTenant, requirePermission('workfl
     .eq('id', wf.id)
   if (error) return res.status(400).json({ error: error.message })
   audit(req, 'workflow.reject', wf.id, { comment: parsed.data.comment })
+  // Module G : rejet — prévient le créateur avec le motif (§5.7)
+  void notifyUsers([wf.created_by], {
+    tenantId: req.user!.tenant_id!,
+    kind: 'workflow.rejected',
+    dedupeKey: `workflow.reject:${wf.id}:v${wf.version}`,
+    title: `Workflow rejeté : ${wf.name}`,
+    body: parsed.data.comment,
+    link: '/workflows',
+    entity: 'workflow_definition',
+    entityId: wf.id,
+    excludeUserIds: [req.user?.id],
+  })
   res.json({ workflow: { ...wf, status: 'draft' } })
 })
 

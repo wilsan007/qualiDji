@@ -19,6 +19,7 @@ API_URL="${API_URL:-http://localhost:4000/api/v1}"
 AUTH_URL="${AUTH_URL:-http://127.0.0.1:54341/auth/v1}"
 RBAC_QM_EMAIL="${RBAC_QM_EMAIL:-rbac.test@qualidji.fr}"
 RBAC_OP_EMAIL="${RBAC_OP_EMAIL:-operator.test@qualidji.fr}"
+RBAC_TA_EMAIL="${RBAC_TA_EMAIL:-ta.test@qualidji.fr}"
 RBAC_PASSWORD="${RBAC_PASSWORD:-Qualidji!RBAC2026}"
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -97,8 +98,10 @@ echo "AUTH : $AUTH_URL"
 echo "-- Logins --"
 QM_TOKEN="$(login "$RBAC_QM_EMAIL")"
 OP_TOKEN="$(login "$RBAC_OP_EMAIL")"
+TA_TOKEN="$(login "$RBAC_TA_EMAIL")"
 echo "  ✓ QM ($RBAC_QM_EMAIL) — token obtenu"
 echo "  ✓ OP ($RBAC_OP_EMAIL) — token obtenu"
+echo "  ✓ TA ($RBAC_TA_EMAIL) — token obtenu (tenant_admin : user.manage + workflow.approve)"
 
 FAKE_UUID="00000000-0000-0000-0000-000000000000"
 
@@ -180,40 +183,63 @@ check 'OP PUT /workflows/<wf> → 403 workflow.edit_draft'  403       "$OP_TOKEN
 check 'OP POST /workflows/<wf>/submit → 403'              403       "$OP_TOKEN"  POST "/workflows/$WF_CODE/submit" '{}'
 check 'QM POST /workflows/<wf>/submit → 200 in_review'    200       "$QM_TOKEN"  POST "/workflows/$WF_CODE/submit" '{}'
 check 'OP POST /workflows/<wf>/approve → 403'             403       "$OP_TOKEN"  POST "/workflows/$WF_CODE/approve" '{}'
-check 'QM POST /workflows/<wf>/approve → 200 published'   200       "$QM_TOKEN"  POST "/workflows/$WF_CODE/approve" '{}'
+# Séparation des tâches (§6.3) : le workflow créé par QM est approuvé par le TA —
+# l'approbateur different notifie le créateur (pas d'auto-notification).
+check 'TA POST /workflows/<wf>/approve → 200 published'   200       "$TA_TOKEN"  POST "/workflows/$WF_CODE/approve" '{}'
 check 'QM duplicate → 201 (V2 brouillon)'                 201       "$QM_TOKEN"  POST "/workflows/$WF_CODE/duplicate" '{"change_reason":"E2E duplication"}'
 check 'QM DELETE V2 brouillon → 204'                      204       "$QM_TOKEN"  DELETE "/workflows/${WF_CODE}_V2" '{}'
 check 'QM deprecate V1 → 200'                             200       "$QM_TOKEN"  POST "/workflows/$WF_CODE/deprecate" '{"change_reason":"E2E cloture"}'
 check 'QM DELETE V1 déprécié → 204'                       204       "$QM_TOKEN"  DELETE "/workflows/$WF_CODE" '{}'
 
 echo "-- §3.4 Gestion des utilisateurs (user.manage) --"
-TA_EMAIL="${RBAC_TA_EMAIL:-ta.test@qualidji.fr}"
-TA_TOKEN=$(curl -s -m 20 -X POST "$AUTH_URL/token?grant_type=password" \
-  -H "apikey: $ANON_KEY" -H 'Content-Type: application/json' \
-  -d "{\"email\":\"$TA_EMAIL\",\"password\":\"$RBAC_PASSWORD\"}" \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin).get("access_token",""))' 2>/dev/null)
-if [ -n "$TA_TOKEN" ]; then
-  PASS=$((PASS + 1)); echo "  ✓ TA ($TA_EMAIL) — token obtenu"
-else
-  FAIL=$((FAIL + 1)); echo "  ✗ TA ($TA_EMAIL) — login impossible (compte tenant_admin requis)"
-fi
 check 'OP GET /users → 403 user.manage'                    403       "$OP_TOKEN"  GET /users
 check 'QM GET /users → 403 user.manage'                    403       "$QM_TOKEN"  GET /users
 check 'TA GET /users → 200'                                200       "$TA_TOKEN"  GET /users
-E2E_USER="e2e.user.$(date +%s)@qualidji.fr"
-check 'TA POST /users/invite → 201'                        201       "$TA_TOKEN"  POST /users/invite "{\"email\":\"$E2E_USER\",\"role\":\"operator\",\"display_name\":\"E2E User\"}"
-E2E_UID=$(curl -s -m 20 "$API_URL/users" -H "Authorization: Bearer $TA_TOKEN" | python3 -c "import sys,json;us=json.load(sys.stdin).get('users',[]);print(next((u['id'] for u in us if u['email']=='$E2E_USER'),''))" 2>/dev/null)
-check 'TA POST /users/invite rôle plateforme → 400'        400       "$TA_TOKEN"  POST /users/invite "{\"email\":\"plaat.$(date +%s)@qualidji.fr\",\"role\":\"super_admin\"}"
-if [ -n "$E2E_UID" ]; then
-  check 'TA PATCH rôle → 200'                              200       "$TA_TOKEN"  PATCH "/users/$E2E_UID" '{"role":"department_manager","reason":"E2E"}'
-  check 'TA GET /users/<id> → 200 + historique'            200       "$TA_TOKEN"  GET "/users/$E2E_UID"
-  check 'TA deactivate → 200'                              200       "$TA_TOKEN"  POST "/users/$E2E_UID/deactivate" '{}'
-  check 'TA activate → 200'                                200       "$TA_TOKEN"  POST "/users/$E2E_UID/activate" '{}'
-  # Nettoyage : l'utilisateur E2E reste mais suspendu (pas de suppression §3.4)
-  curl -s -m 20 -X POST "$API_URL/users/$E2E_UID/deactivate" -H "Authorization: Bearer $TA_TOKEN" > /dev/null
+# Invitation : 201 attendu en local ; le GoTrue cloud applique une rate limit
+# d'emails (~1/h) → 'rate limit' accepté comme skip explicite (les checks
+# suivants n'en dépendent pas : le cycle utilise e2e.member pré-créé).
+E2E_INVITE="e2e.invite.$(date +%s)@qualidji.fr"
+CODE=$(curl -s -m 20 -o "$BODY_FILE" -w '%{http_code}' -X POST "$API_URL/users/invite" \
+  -H "Authorization: Bearer $TA_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$E2E_INVITE\",\"role\":\"reader\"}")
+if [ "$CODE" = 201 ]; then
+  PASS=$((PASS + 1)); echo "  ✓ TA POST /users/invite → 201 (invitation envoyée)"
+elif grep -qi 'rate limit' "$BODY_FILE"; then
+  PASS=$((PASS + 1)); echo "  ○ TA POST /users/invite → skip (rate limit emails GoTrue cloud)"
 else
-  FAIL=$((FAIL + 5)); echo "  ✗ 5 checks §3.4 ignorés (utilisateur E2E non trouvé après invitation)"
+  FAIL=$((FAIL + 1)); echo "  ✗ TA POST /users/invite → reçu $CODE | $(head -c 120 "$BODY_FILE")"
 fi
+check 'TA POST /users/invite rôle plateforme → 400'        400       "$TA_TOKEN"  POST /users/invite "{\"email\":\"plat.$(date +%s)@qualidji.fr\",\"role\":\"super_admin\"}"
+
+# Cycle rôle/historique/suspension sur le membre pré-créé (local + distant)
+E2E_MEMBER_UID=$(curl -s -m 20 "$API_URL/users" -H "Authorization: Bearer $TA_TOKEN" | python3 -c "import sys,json;us=json.load(sys.stdin).get('users',[]);print(next((u['id'] for u in us if u['email']=='e2e.member@qualidji.fr'),''))" 2>/dev/null)
+if [ -n "$E2E_MEMBER_UID" ]; then
+  check 'TA PATCH rôle membre → 200 (historique)'          200       "$TA_TOKEN"  PATCH "/users/$E2E_MEMBER_UID" '{"role":"department_manager","reason":"E2E"}'
+  check 'TA GET membre → 200 + role_history'               200       "$TA_TOKEN"  GET "/users/$E2E_MEMBER_UID"
+  check 'TA deactivate membre → 200 (sessions révoquées)'  200       "$TA_TOKEN"  POST "/users/$E2E_MEMBER_UID/deactivate" '{}'
+  check 'TA activate membre → 200'                         200       "$TA_TOKEN"  POST "/users/$E2E_MEMBER_UID/activate" '{}'
+  # Nettoyage : restauration du rôle reader (reste actif)
+  curl -s -m 20 -X PATCH "$API_URL/users/$E2E_MEMBER_UID" -H "Authorization: Bearer $TA_TOKEN" -H 'Content-Type: application/json' -d '{"role":"reader"}' > /dev/null
+else
+  FAIL=$((FAIL + 4)); echo "  ✗ 4 checks §3.4 ignorés (e2e.member@qualidji.fr introuvable)"
+fi
+
+echo "-- Module G : notifications (V5 §5.7) --"
+check '401 sans token — GET /notifications'                401       ""           GET /notifications
+check 'OP GET /notifications → 200 (boîte propre)'         200       "$OP_TOKEN"  GET /notifications
+# Le cycle Module B a généré : workflow.in_review → TA, workflow.approved → QM
+NOTIF_KINDS=$(curl -s -m 20 "$API_URL/notifications" -H "Authorization: Bearer $TA_TOKEN" | python3 -c 'import sys,json;print(",".join(n["kind"] for n in json.load(sys.stdin).get("notifications",[])))' 2>/dev/null)
+case "$NOTIF_KINDS" in
+  *workflow.in_review*) PASS=$((PASS + 1)); echo "  ✓ TA reçoit workflow.in_review (événement submit)" ;;
+  *) FAIL=$((FAIL + 1)); echo "  ✗ TA sans workflow.in_review | kinds=$NOTIF_KINDS" ;;
+esac
+NOTIF_KINDS=$(curl -s -m 20 "$API_URL/notifications" -H "Authorization: Bearer $QM_TOKEN" | python3 -c 'import sys,json;print(",".join(n["kind"] for n in json.load(sys.stdin).get("notifications",[])))' 2>/dev/null)
+case "$NOTIF_KINDS" in
+  *workflow.approved*) PASS=$((PASS + 1)); echo "  ✓ QM reçoit workflow.approved (événement approve)" ;;
+  *) FAIL=$((FAIL + 1)); echo "  ✗ QM sans workflow.approved | kinds=$NOTIF_KINDS" ;;
+esac
+check 'POST /notifications/<fake>/read → 404'              404       "$QM_TOKEN"  POST '/notifications/00000000-0000-0000-0000-000000000000/read' '{}'
+check 'POST /notifications/read-all → 200'                 200       "$QM_TOKEN"  POST /notifications/read-all '{}'
 
 echo "-- session : GET /me (permissions pour le gating frontend) --"
 check 'OP GET /me → 200 avec permissions'                      200        "$OP_TOKEN"  GET /me

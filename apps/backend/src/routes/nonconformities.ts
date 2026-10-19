@@ -2,6 +2,7 @@ import { Router } from 'express'
 import type { Router as ExpressRouter } from 'express'
 import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '../middleware/auth'
 import { supabaseAdmin } from '../lib/supabase'
+import { notifyByRoles } from '../lib/notify'
 
 const router: ExpressRouter = Router()
 
@@ -36,6 +37,18 @@ router.post('/', requireAuth, requireTenant, requirePermission('action.approve')
   }).select().single()
 
   if (error) return res.status(400).json({ error: error.message })
+  // Module G : NC ouverte — alerte qualité + admin tenant (hors créateur, §5.7)
+  void notifyByRoles(['quality_manager', 'tenant_admin'], {
+    tenantId: req.user!.tenant_id!,
+    kind: 'nc.created',
+    dedupeKey: `nc.created:${data.id}`,
+    title: `Non-conformité ouverte : ${title}`,
+    body: `Sévérité : ${severity ?? 'minor'}`,
+    link: '/nc',
+    entity: 'nonconformity',
+    entityId: data.id,
+    excludeUserIds: [req.user!.id],
+  })
   res.status(201).json({ nonconformity: data })
 })
 

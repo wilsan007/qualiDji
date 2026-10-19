@@ -17,6 +17,7 @@ import { tenantsRouter } from './routes/tenants'
 import { matrixRouter } from './routes/matrix'
 import { workflowsRouter } from './routes/workflows'
 import { usersRouter } from './routes/users'
+import { notificationsRouter } from './routes/notifications'
 import { requireAuth, AuthedRequest } from './middleware/auth'
 import { supabaseAdmin } from './lib/supabase'
 
@@ -69,6 +70,8 @@ app.use('/api/v1/matrix', matrixRouter)
 app.use('/api/v1/workflows', workflowsRouter)
 // §3.4 Gestion des utilisateurs (user.manage)
 app.use('/api/v1/users', usersRouter)
+// Module G — Notifications internes (V5 §5.7)
+app.use('/api/v1/notifications', notificationsRouter)
 
 // 404
 app.use((_req, res) => {

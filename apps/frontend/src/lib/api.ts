@@ -253,3 +253,22 @@ export const usersApi = {
   deactivate: (id: string) => apiFetch(`/users/${id}/deactivate`, { method: 'POST' }),
   activate: (id: string) => apiFetch(`/users/${id}/activate`, { method: 'POST' }),
 }
+
+// Module G — Notifications internes (V5 §5.7)
+export interface NotificationItem {
+  id: string
+  kind: string
+  title: string
+  body: string | null
+  entity: string | null
+  entity_id: string | null
+  link: string | null
+  read_at: string | null
+  created_at: string
+}
+
+export const notificationsApi = {
+  list: () => apiFetch('/notifications?limit=30'),
+  markRead: (id: string) => apiFetch(`/notifications/${id}/read`, { method: 'POST' }),
+  markAllRead: () => apiFetch('/notifications/read-all', { method: 'POST' }),
+}
