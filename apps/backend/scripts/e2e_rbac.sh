@@ -241,6 +241,21 @@ esac
 check 'POST /notifications/<fake>/read → 404'              404       "$QM_TOKEN"  POST '/notifications/00000000-0000-0000-0000-000000000000/read' '{}'
 check 'POST /notifications/read-all → 200'                 200       "$QM_TOKEN"  POST /notifications/read-all '{}'
 
+echo "-- Module H : rapports et préparation d'audit (V5 §5.8) --"
+check 'OP GET /reports/actions → 200 (action.read)'        200       "$OP_TOKEN"  GET /reports/actions
+check 'OP GET /reports/nc-capa → 200 (action.read)'        200       "$OP_TOKEN"  GET /reports/nc-capa
+check 'OP GET /reports/audit-pack → 403 audit.export'      403       "$OP_TOKEN"  GET /reports/audit-pack
+check 'QM GET /reports/audit-pack → 200'                   200       "$QM_TOKEN"  GET /reports/audit-pack
+check 'OP GET /reports/actions.csv → 403'                  403       "$OP_TOKEN"  GET /reports/actions.csv
+# Exigence §5.8 : le CSV porte date d'extraction, identité exportateur et filtres
+CODE=$(curl -s -m 20 -o "$BODY_FILE" -w '%{http_code}' "$API_URL/reports/actions.csv?status=submitted" -H "Authorization: Bearer $QM_TOKEN")
+if [ "$CODE" = 200 ] && grep -q 'Exporté par' "$BODY_FILE" && grep -q "$RBAC_QM_EMAIL" "$BODY_FILE" && grep -q 'status=submitted' "$BODY_FILE" && grep -q 'extraction' "$BODY_FILE"; then
+  PASS=$((PASS + 1)); echo "  ✓ QM actions.csv → 200 avec méta (date, exportateur, filtres)"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ QM actions.csv méta incomplètes → reçu $CODE | $(head -c 150 "$BODY_FILE")"
+fi
+check 'QM GET /reports/nc-capa.csv → 200'                  200       "$QM_TOKEN"  GET /reports/nc-capa.csv
+
 echo "-- session : GET /me (permissions pour le gating frontend) --"
 check 'OP GET /me → 200 avec permissions'                      200        "$OP_TOKEN"  GET /me
 check 'QM GET /me → 200'                                       200        "$QM_TOKEN"  GET /me

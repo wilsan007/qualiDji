@@ -272,3 +272,49 @@ export const notificationsApi = {
   markRead: (id: string) => apiFetch(`/notifications/${id}/read`, { method: 'POST' }),
   markAllRead: () => apiFetch('/notifications/read-all', { method: 'POST' }),
 }
+
+// Module H — Rapports et préparation d'audit (V5 §5.8)
+export interface ReportsFilters {
+  status?: string
+  from?: string
+  to?: string
+}
+
+function qsOf(params?: ReportsFilters): string {
+  if (!params) return ''
+  const parts: string[] = []
+  if (params.status) parts.push(`status=${encodeURIComponent(params.status)}`)
+  if (params.from) parts.push(`from=${encodeURIComponent(params.from)}`)
+  if (params.to) parts.push(`to=${encodeURIComponent(params.to)}`)
+  return parts.length ? `?${parts.join('&')}` : ''
+}
+
+async function downloadCsv(path: string, filename: string) {
+  const token = await getToken()
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.error ?? `API error ${res.status}`)
+  }
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+export const reportsApi = {
+  actions: (params?: ReportsFilters) => apiFetch('/reports/actions' + qsOf(params)),
+  ncCapa: () => apiFetch('/reports/nc-capa'),
+  auditPack: () => apiFetch('/reports/audit-pack'),
+  exportActions: (params?: ReportsFilters) =>
+    downloadCsv('/reports/actions.csv' + qsOf(params), `rapport_actions_${new Date().toISOString().slice(0, 10)}.csv`),
+  exportNcCapa: () =>
+    downloadCsv('/reports/nc-capa.csv', `registre_nc_capa_${new Date().toISOString().slice(0, 10)}.csv`),
+}
