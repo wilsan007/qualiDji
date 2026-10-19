@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ClipboardList, LayoutDashboard, LogOut, ShieldAlert, Activity, Menu, X, Bell, Table2 } from 'lucide-react'
+import { ClipboardList, LayoutDashboard, LogOut, ShieldAlert, Activity, Menu, X, Bell, Table2, LibraryBig } from 'lucide-react'
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useAuthStore } from '@/stores/auth'
 import { usePermissions } from '@/hooks/usePermissions'
@@ -21,6 +21,7 @@ const NAV_ITEMS: NavItem[] = [
   { path: '/nc', label: 'Non-conformités', icon: ShieldAlert },
   { path: '/audit', label: 'Prêt audit', icon: Activity, perm: 'audit.export' },
   { path: '/matrice', label: 'Matrice ISO', icon: Table2 },
+  { path: '/workflows', label: 'Bibliothèque WF', icon: LibraryBig, perm: 'workflow.read' },
 ]
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
@@ -83,6 +84,7 @@ function pageTitle(pathname: string): string {
   if (pathname === '/nc') return 'Non-conformités'
   if (pathname === '/audit') return 'Prêt audit'
   if (pathname === '/matrice') return 'Matrice de traçabilité'
+  if (pathname === '/workflows') return 'Bibliothèque de workflows'
   return 'QualiDji'
 }
 

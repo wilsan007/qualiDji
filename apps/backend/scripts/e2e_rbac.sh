@@ -163,6 +163,29 @@ check 'QM GET /dashboard/manager → 200 (action.assign)'        200        "$QM
 check 'QM GET /dashboard/quality → 200 (action.approve)'       200        "$QM_TOKEN"  GET /dashboard/quality
 check 'OP GET /dashboard/quality → 403 action.approve'         403        "$OP_TOKEN"  GET /dashboard/quality
 
+echo "-- Module B : bibliothèque de workflows (V5 §5.2) --"
+# Nettoyage préalable (re-runs)
+curl -s -m 20 -X DELETE "$API_URL/workflows/E2E_RBAC_WF_V2" -H "Authorization: Bearer $QM_TOKEN" > /dev/null
+curl -s -m 20 -X POST "$API_URL/workflows/E2E_RBAC_WF/deprecate" -H "Authorization: Bearer $QM_TOKEN" -H 'Content-Type: application/json' -d '{"change_reason":"re-run"}' > /dev/null
+curl -s -m 20 -X DELETE "$API_URL/workflows/E2E_RBAC_WF" -H "Authorization: Bearer $QM_TOKEN" > /dev/null
+WF_BODY='{"code":"E2E_RBAC_WF","name":"Workflow E2E RBAC","standard_clause":"8.1","actions":[{"title":"Controle E2E","objective":"Valider le cycle de publication","assigned_role":"operator","steps":[{"sequence":1,"title":"Resultat","instruction":"Saisir le resultat du controle","step_type":"text_input","required":true}]}]}'
+check 'OP POST /workflows → 403 workflow.create'         403       "$OP_TOKEN"  POST /workflows "$WF_BODY"
+WF_CODE=$(curl -s -m 20 -X POST "$API_URL/workflows" -H "Authorization: Bearer $QM_TOKEN" -H 'Content-Type: application/json' -d "$WF_BODY" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("workflow",{}).get("id",""))' 2>/dev/null)
+if [ "$WF_CODE" = "E2E_RBAC_WF" ]; then
+  PASS=$((PASS + 1)); echo "  ✓ QM POST /workflows → 201 (draft E2E_RBAC_WF)"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ QM POST /workflows → échec création (WF_CODE='$WF_CODE')"
+fi
+check 'OP PUT /workflows/<wf> → 403 workflow.edit_draft'  403       "$OP_TOKEN"  PUT "/workflows/$WF_CODE" "$WF_BODY"
+check 'OP POST /workflows/<wf>/submit → 403'              403       "$OP_TOKEN"  POST "/workflows/$WF_CODE/submit" '{}'
+check 'QM POST /workflows/<wf>/submit → 200 in_review'    200       "$QM_TOKEN"  POST "/workflows/$WF_CODE/submit" '{}'
+check 'OP POST /workflows/<wf>/approve → 403'             403       "$OP_TOKEN"  POST "/workflows/$WF_CODE/approve" '{}'
+check 'QM POST /workflows/<wf>/approve → 200 published'   200       "$QM_TOKEN"  POST "/workflows/$WF_CODE/approve" '{}'
+check 'QM duplicate → 201 (V2 brouillon)'                 201       "$QM_TOKEN"  POST "/workflows/$WF_CODE/duplicate" '{"change_reason":"E2E duplication"}'
+check 'QM DELETE V2 brouillon → 204'                      204       "$QM_TOKEN"  DELETE "/workflows/${WF_CODE}_V2" '{}'
+check 'QM deprecate V1 → 200'                             200       "$QM_TOKEN"  POST "/workflows/$WF_CODE/deprecate" '{"change_reason":"E2E cloture"}'
+check 'QM DELETE V1 déprécié → 204'                       204       "$QM_TOKEN"  DELETE "/workflows/$WF_CODE" '{}'
+
 echo "-- session : GET /me (permissions pour le gating frontend) --"
 check 'OP GET /me → 200 avec permissions'                      200        "$OP_TOKEN"  GET /me
 check 'QM GET /me → 200'                                       200        "$QM_TOKEN"  GET /me

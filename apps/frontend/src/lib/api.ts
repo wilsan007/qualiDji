@@ -160,3 +160,73 @@ export const matrixApi = {
     URL.revokeObjectURL(url)
   },
 }
+
+// Module B — Bibliothèque de workflows (V5 §5.2)
+export interface WorkflowSummary {
+  id: string
+  name: string
+  standard_clause: string
+  version: number
+  owner_role: string
+  frequency: string
+  is_active: boolean
+  status: 'draft' | 'in_review' | 'published' | 'deprecated'
+  change_reason?: string | null
+  review_comment?: string | null
+  effective_from?: string | null
+  approved_at?: string | null
+  created_at: string
+}
+
+export interface WorkflowStepForm {
+  id?: string
+  sequence: number
+  title: string
+  instruction: string
+  step_type: string
+  required: boolean
+  validation_rule?: string | null
+  evidence_requirement?: string
+  approver_role?: string | null
+  segregation_of_duties?: boolean
+  ai_guidance_enabled?: boolean
+  ai_prompt_template?: string | null
+  guardrails?: unknown[]
+  choices?: unknown[] | null
+}
+
+export interface WorkflowActionForm {
+  id?: string
+  title: string
+  objective: string
+  assigned_role: string
+  sort_order?: number
+  steps: WorkflowStepForm[]
+}
+
+export interface WorkflowPayload {
+  code?: string
+  name: string
+  standard_clause: string
+  owner_role: string
+  frequency: string
+  actions: WorkflowActionForm[]
+}
+
+export const workflowsApi = {
+  list: (includeAll = false) => apiFetch('/workflows' + (includeAll ? '?include_all=1' : '')),
+  get: (id: string) => apiFetch(`/workflows/${id}`),
+  create: (body: WorkflowPayload) =>
+    apiFetch('/workflows', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id: string, body: WorkflowPayload) =>
+    apiFetch(`/workflows/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  submit: (id: string) => apiFetch(`/workflows/${id}/submit`, { method: 'POST' }),
+  approve: (id: string) => apiFetch(`/workflows/${id}/approve`, { method: 'POST' }),
+  reject: (id: string, comment: string) =>
+    apiFetch(`/workflows/${id}/reject`, { method: 'POST', body: JSON.stringify({ comment }) }),
+  duplicate: (id: string, change_reason: string) =>
+    apiFetch(`/workflows/${id}/duplicate`, { method: 'POST', body: JSON.stringify({ change_reason }) }),
+  deprecate: (id: string, change_reason: string) =>
+    apiFetch(`/workflows/${id}/deprecate`, { method: 'POST', body: JSON.stringify({ change_reason }) }),
+  remove: (id: string) => apiFetch(`/workflows/${id}`, { method: 'DELETE' }),
+}

@@ -15,6 +15,7 @@ import { dashboardRouter } from './routes/dashboard'
 import { auditRouter } from './routes/audit'
 import { tenantsRouter } from './routes/tenants'
 import { matrixRouter } from './routes/matrix'
+import { workflowsRouter } from './routes/workflows'
 import { requireAuth, AuthedRequest } from './middleware/auth'
 import { supabaseAdmin } from './lib/supabase'
 
@@ -63,6 +64,8 @@ app.use('/api/v1/dashboard', dashboardRouter)
 app.use('/api/v1/audit-log', auditRouter)
 // Matrice de traçabilité ISO 9001:2026 (V4 — annexes K & L)
 app.use('/api/v1/matrix', matrixRouter)
+// Module B — Bibliothèque de workflows (V5 §5.2)
+app.use('/api/v1/workflows', workflowsRouter)
 
 // 404
 app.use((_req, res) => {
