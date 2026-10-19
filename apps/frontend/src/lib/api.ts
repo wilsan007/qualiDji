@@ -40,11 +40,20 @@ export const actionsApi = {
 
 // Steps
 export const stepsApi = {
-  submit: (actionId: string, stepId: string, value: any) =>
-    apiFetch(`/steps/${actionId}/steps/${stepId}/submit`, {
+  /** Offline-first (§13) : hors ligne → enfile la mutation (rejeu idempotent) et
+   * retourne { pending: true } ; la UI affiche l'état brouillon synchronisé. */
+  submit: async (actionId: string, stepId: string, value: any) => {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      const { offlineQueue, emitQueueChanged } = await import('./offline/db')
+      await offlineQueue.enqueue('step.submit', { actionId, stepId, value }, `step.submit:${actionId}:${stepId}`)
+      emitQueueChanged()
+      return { pending: true as const }
+    }
+    return apiFetch(`/steps/${actionId}/steps/${stepId}/submit`, {
       method: 'POST',
       body: JSON.stringify({ value }),
-    }),
+    })
+  },
   addEvidence: (actionId: string, stepId: string, body: { kind: string; storage_path: string; checksum?: string; value?: any }) =>
     apiFetch(`/steps/${actionId}/steps/${stepId}/evidence`, {
       method: 'POST',

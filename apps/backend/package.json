@@ -8,10 +8,11 @@
     "build": "tsc --noEmit",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx scripts/test_matrix_logic.ts && tsx scripts/test_rbac_permissions.ts && tsx scripts/test_ai_controls.ts && tsx scripts/test_rate_limiter.ts",
+    "test": "tsx scripts/test_matrix_logic.ts && tsx scripts/test_rbac_permissions.ts && tsx scripts/test_ai_controls.ts && tsx scripts/test_rate_limiter.ts && tsx scripts/test_offline_queue.ts",
     "test:rbac": "tsx scripts/test_rbac_permissions.ts",
     "test:ai": "tsx scripts/test_ai_controls.ts",
     "test:hardening": "tsx scripts/test_rate_limiter.ts",
+    "test:offline": "tsx scripts/test_offline_queue.ts",
     "test:e2e": "bash scripts/e2e_rbac.sh"
   },
   "dependencies": {

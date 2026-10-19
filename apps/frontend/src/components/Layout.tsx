@@ -3,7 +3,9 @@ import { ClipboardList, LayoutDashboard, LogOut, ShieldAlert, Activity, Menu, X,
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useAuthStore } from '@/stores/auth'
 import { usePermissions } from '@/hooks/usePermissions'
+import { useOnlineStatus } from '@/hooks/useOnlineStatus'
 import { notificationsApi, NotificationItem } from '@/lib/api'
+import { WifiOff } from 'lucide-react'
 import { roleLabel, spaceForRole } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { LucideIcon } from 'lucide-react'
@@ -225,6 +227,7 @@ export default function Layout() {
   const { user } = useAuthStore()
   const location = useLocation()
   const [mobileOpen, setMobileOpen] = useState(false)
+  const { online, pending } = useOnlineStatus()
 
   // Ferme le tiroir mobile à chaque changement de page
   useEffect(() => {
@@ -308,6 +311,20 @@ export default function Layout() {
             </div>
           </div>
         </header>
+
+        {/* §13 — bandeau hors-ligne : file de rejeu visible */}
+        {!online && (
+          <div className="bg-amber-50 border-b border-amber-200 text-amber-800 text-xs px-4 sm:px-6 py-1.5 flex items-center gap-2 shrink-0">
+            <WifiOff className="w-3.5 h-3.5" />
+            Mode hors ligne — vos saisies sont conservées localement
+            {pending > 0 && <span className="font-semibold">({pending} en attente de synchronisation)</span>}
+          </div>
+        )}
+        {online && pending > 0 && (
+          <div className="bg-blue-50 border-b border-blue-200 text-blue-800 text-xs px-4 sm:px-6 py-1.5 flex items-center gap-2 shrink-0">
+            Synchronisation de {pending} saisie(s) en attente…
+          </div>
+        )}
 
         <main className="flex-1 overflow-y-auto p-4 sm:p-6">
           <div className="animate-enter">

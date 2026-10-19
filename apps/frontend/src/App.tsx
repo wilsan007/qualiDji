@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import { useAuthStore } from '@/stores/auth'
 import Login from '@/pages/Login'
 import Dashboard from '@/pages/Dashboard'
+import { installOfflineSync } from '@/lib/offline/db'
 import WorkflowExecution from '@/pages/WorkflowExecution'
 import NonConformities from '@/pages/NonConformities'
 import AuditReadiness from '@/pages/AuditReadiness'
@@ -44,6 +45,8 @@ export default function App() {
 
   useEffect(() => {
     fetchProfile()
+    // §13 : replay automatique de la file hors ligne au retour du réseau
+    installOfflineSync()
   }, [fetchProfile])
 
   return (

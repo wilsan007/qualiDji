@@ -1,0 +1,18 @@
+{
+  "name": "QualiDji — Assistant ISO 9001 terrain",
+  "short_name": "QualiDji",
+  "description": "Exécution de conformité ISO 9001 avec assistant IA encadré — usable hors ligne (saisies synchronisées à la reconnexion, §13).",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#2563eb",
+  "lang": "fr",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
