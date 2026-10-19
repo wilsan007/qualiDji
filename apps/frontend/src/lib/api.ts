@@ -230,3 +230,26 @@ export const workflowsApi = {
     apiFetch(`/workflows/${id}/deprecate`, { method: 'POST', body: JSON.stringify({ change_reason }) }),
   remove: (id: string) => apiFetch(`/workflows/${id}`, { method: 'DELETE' }),
 }
+
+// §3.4 Gestion des utilisateurs (user.manage)
+export interface TenantUser {
+  id: string
+  email: string | null
+  display_name: string | null
+  role: string
+  is_active: boolean
+  suspended_at: string | null
+  last_sign_in_at: string | null
+  created_at: string
+}
+
+export const usersApi = {
+  list: () => apiFetch('/users'),
+  get: (id: string) => apiFetch(`/users/${id}`),
+  invite: (body: { email: string; role: string; display_name?: string }) =>
+    apiFetch('/users/invite', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id: string, body: { role?: string; display_name?: string; reason?: string }) =>
+    apiFetch(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deactivate: (id: string) => apiFetch(`/users/${id}/deactivate`, { method: 'POST' }),
+  activate: (id: string) => apiFetch(`/users/${id}/activate`, { method: 'POST' }),
+}

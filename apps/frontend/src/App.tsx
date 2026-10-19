@@ -8,6 +8,7 @@ import NonConformities from '@/pages/NonConformities'
 import AuditReadiness from '@/pages/AuditReadiness'
 import Traceability from '@/pages/Traceability'
 import Workflows from '@/pages/Workflows'
+import Users from '@/pages/Users'
 import Layout from '@/components/Layout'
 
 /** Écran de démarrage pendant la restauration de session (évite l'écran blanc). */
@@ -57,6 +58,7 @@ export default function App() {
           <Route path="audit" element={<RequireAuth><AuditReadiness /></RequireAuth>} />
           <Route path="matrice" element={<RequireAuth><Traceability /></RequireAuth>} />
           <Route path="workflows" element={<RequireAuth><Workflows /></RequireAuth>} />
+          <Route path="users" element={<RequireAuth><Users /></RequireAuth>} />
           {/* Toute route inconnue → tableau de bord (plus de pages blanches) */}
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Route>

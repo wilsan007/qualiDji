@@ -16,6 +16,7 @@ import { auditRouter } from './routes/audit'
 import { tenantsRouter } from './routes/tenants'
 import { matrixRouter } from './routes/matrix'
 import { workflowsRouter } from './routes/workflows'
+import { usersRouter } from './routes/users'
 import { requireAuth, AuthedRequest } from './middleware/auth'
 import { supabaseAdmin } from './lib/supabase'
 
@@ -66,6 +67,8 @@ app.use('/api/v1/audit-log', auditRouter)
 app.use('/api/v1/matrix', matrixRouter)
 // Module B — Bibliothèque de workflows (V5 §5.2)
 app.use('/api/v1/workflows', workflowsRouter)
+// §3.4 Gestion des utilisateurs (user.manage)
+app.use('/api/v1/users', usersRouter)
 
 // 404
 app.use((_req, res) => {

@@ -186,6 +186,35 @@ check 'QM DELETE V2 brouillon → 204'                      204       "$QM_TOKEN
 check 'QM deprecate V1 → 200'                             200       "$QM_TOKEN"  POST "/workflows/$WF_CODE/deprecate" '{"change_reason":"E2E cloture"}'
 check 'QM DELETE V1 déprécié → 204'                       204       "$QM_TOKEN"  DELETE "/workflows/$WF_CODE" '{}'
 
+echo "-- §3.4 Gestion des utilisateurs (user.manage) --"
+TA_EMAIL="${RBAC_TA_EMAIL:-ta.test@qualidji.fr}"
+TA_TOKEN=$(curl -s -m 20 -X POST "$AUTH_URL/token?grant_type=password" \
+  -H "apikey: $ANON_KEY" -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$TA_EMAIL\",\"password\":\"$RBAC_PASSWORD\"}" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin).get("access_token",""))' 2>/dev/null)
+if [ -n "$TA_TOKEN" ]; then
+  PASS=$((PASS + 1)); echo "  ✓ TA ($TA_EMAIL) — token obtenu"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ TA ($TA_EMAIL) — login impossible (compte tenant_admin requis)"
+fi
+check 'OP GET /users → 403 user.manage'                    403       "$OP_TOKEN"  GET /users
+check 'QM GET /users → 403 user.manage'                    403       "$QM_TOKEN"  GET /users
+check 'TA GET /users → 200'                                200       "$TA_TOKEN"  GET /users
+E2E_USER="e2e.user.$(date +%s)@qualidji.fr"
+check 'TA POST /users/invite → 201'                        201       "$TA_TOKEN"  POST /users/invite "{\"email\":\"$E2E_USER\",\"role\":\"operator\",\"display_name\":\"E2E User\"}"
+E2E_UID=$(curl -s -m 20 "$API_URL/users" -H "Authorization: Bearer $TA_TOKEN" | python3 -c "import sys,json;us=json.load(sys.stdin).get('users',[]);print(next((u['id'] for u in us if u['email']=='$E2E_USER'),''))" 2>/dev/null)
+check 'TA POST /users/invite rôle plateforme → 400'        400       "$TA_TOKEN"  POST /users/invite "{\"email\":\"plaat.$(date +%s)@qualidji.fr\",\"role\":\"super_admin\"}"
+if [ -n "$E2E_UID" ]; then
+  check 'TA PATCH rôle → 200'                              200       "$TA_TOKEN"  PATCH "/users/$E2E_UID" '{"role":"department_manager","reason":"E2E"}'
+  check 'TA GET /users/<id> → 200 + historique'            200       "$TA_TOKEN"  GET "/users/$E2E_UID"
+  check 'TA deactivate → 200'                              200       "$TA_TOKEN"  POST "/users/$E2E_UID/deactivate" '{}'
+  check 'TA activate → 200'                                200       "$TA_TOKEN"  POST "/users/$E2E_UID/activate" '{}'
+  # Nettoyage : l'utilisateur E2E reste mais suspendu (pas de suppression §3.4)
+  curl -s -m 20 -X POST "$API_URL/users/$E2E_UID/deactivate" -H "Authorization: Bearer $TA_TOKEN" > /dev/null
+else
+  FAIL=$((FAIL + 5)); echo "  ✗ 5 checks §3.4 ignorés (utilisateur E2E non trouvé après invitation)"
+fi
+
 echo "-- session : GET /me (permissions pour le gating frontend) --"
 check 'OP GET /me → 200 avec permissions'                      200        "$OP_TOKEN"  GET /me
 check 'QM GET /me → 200'                                       200        "$QM_TOKEN"  GET /me
