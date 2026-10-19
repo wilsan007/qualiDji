@@ -27,10 +27,15 @@ jobs:
       - name: Typecheck (backend + frontend)
         run: pnpm -r typecheck
 
-      # Tests unitaires offline : matrice, RBAC (13), contrôles IA (30), rate limiter.
-      # Les tests n'exigent ni DB ni secret — conformes §16.
+      # Tests unitaires offline : matrice, RBAC (13), contrôles IA (30), rate
+      # limiter (7), file hors ligne (13). Les tests n'exigent ni DB ni secret :
+      # des valeurs factices contournent le fail-fast de lib/supabase au chargement.
       - name: Tests unitaires backend
         run: pnpm --filter @iso/backend test
+        env:
+          SUPABASE_URL: http://localhost:54321
+          SUPABASE_ANON_KEY: ci-dummy-anon-key
+          SUPABASE_SERVICE_ROLE_KEY: ci-dummy-service-role-key
 
       - name: Build frontend
         run: pnpm --filter @iso/frontend build
