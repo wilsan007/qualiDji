@@ -39,7 +39,7 @@ interface ActionFilters {
 }
 
 /** Rapport d'actions du tenant, filtrable (§5.8). */
-async function loadActionsReport(tenantId: string, filters: ActionFilters) {
+export async function loadActionsReport(tenantId: string, filters: ActionFilters) {
   let query = supabaseAdmin
     .from('actions')
     .select('*, workflow_definitions(id, name, standard_clause), workflow_actions(id, title, objective)')
@@ -80,7 +80,7 @@ async function loadActionsReport(tenantId: string, filters: ActionFilters) {
 }
 
 /** Registre NC+CAPA avec ancienneté / gravité / échéance / efficacité (§5.8). */
-async function loadNcCapaReport(tenantId: string) {
+export async function loadNcCapaReport(tenantId: string) {
   const { data: ncs, error } = await supabaseAdmin
     .from('nonconformities')
     .select('*')

@@ -12,6 +12,8 @@ import Workflows from '@/pages/Workflows'
 import Users from '@/pages/Users'
 import Reports from '@/pages/Reports'
 import Documents from '@/pages/Documents'
+import Audits from '@/pages/Audits'
+import Reviews from '@/pages/Reviews'
 import Layout from '@/components/Layout'
 
 /** Écran de démarrage pendant la restauration de session (évite l'écran blanc). */
@@ -66,6 +68,8 @@ export default function App() {
           <Route path="users" element={<RequireAuth><Users /></RequireAuth>} />
           <Route path="reports" element={<RequireAuth><Reports /></RequireAuth>} />
           <Route path="documents" element={<RequireAuth><Documents /></RequireAuth>} />
+          <Route path="audits" element={<RequireAuth><Audits /></RequireAuth>} />
+          <Route path="reviews" element={<RequireAuth><Reviews /></RequireAuth>} />
           {/* Toute route inconnue → tableau de bord (plus de pages blanches) */}
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Route>

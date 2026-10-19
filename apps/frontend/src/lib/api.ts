@@ -371,3 +371,30 @@ export const documentsApi = {
     apiFetch(`/documents/${id}/deprecate`, { method: 'POST', body: JSON.stringify({ change_reason }) }),
   remove: (id: string) => apiFetch(`/documents/${id}`, { method: 'DELETE' }),
 }
+
+// §9.2 Audits internes + §9.3 Revues de direction
+export const auditsApi = {
+  list: () => apiFetch('/audits'),
+  eligible: () => apiFetch('/audits/members/eligible'),
+  get: (id: string) => apiFetch(`/audits/${id}`),
+  create: (body: { title: string; scope: string; criteria: string; auditor_id: string }) =>
+    apiFetch('/audits', { method: 'POST', body: JSON.stringify(body) }),
+  start: (id: string) => apiFetch(`/audits/${id}/start`, { method: 'POST' }),
+  close: (id: string, summary: string) =>
+    apiFetch(`/audits/${id}/close`, { method: 'POST', body: JSON.stringify({ summary }) }),
+  addFinding: (auditId: string, body: { title: string; description: string; classification: string; process_owner_id?: string | null }) =>
+    apiFetch(`/audits/${auditId}/findings`, { method: 'POST', body: JSON.stringify(body) }),
+  respond: (findingId: string, body: { response: string; corrective_action?: string }) =>
+    apiFetch(`/audits/findings/${findingId}/respond`, { method: 'POST', body: JSON.stringify(body) }),
+  verify: (findingId: string, body: { effective: boolean; comment?: string }) =>
+    apiFetch(`/audits/findings/${findingId}/verify`, { method: 'POST', body: JSON.stringify(body) }),
+}
+
+export const reviewsApi = {
+  list: () => apiFetch('/reviews'),
+  create: (body: { title: string }) => apiFetch('/reviews', { method: 'POST', body: JSON.stringify(body) }),
+  prefill: (id: string) => apiFetch(`/reviews/${id}/prefill`, { method: 'POST' }),
+  update: (id: string, body: { decisions?: any[]; actions?: any[] }) =>
+    apiFetch(`/reviews/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  hold: (id: string) => apiFetch(`/reviews/${id}/hold`, { method: 'POST' }),
+}

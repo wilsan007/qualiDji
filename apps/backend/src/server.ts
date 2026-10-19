@@ -20,6 +20,8 @@ import { usersRouter } from './routes/users'
 import { notificationsRouter } from './routes/notifications'
 import { reportsRouter } from './routes/reports'
 import { documentsRouter } from './routes/documents'
+import { auditsRouter } from './routes/audits'
+import { reviewsRouter } from './routes/reviews'
 import { requireAuth, AuthedRequest } from './middleware/auth'
 import { supabaseAdmin } from './lib/supabase'
 import { rateLimit } from './lib/rateLimiter'
@@ -81,6 +83,9 @@ app.use('/api/v1/notifications', notificationsRouter)
 app.use('/api/v1/reports', reportsRouter)
 // §8.6 Documents contrôlés
 app.use('/api/v1/documents', documentsRouter)
+// §9.2 Audits internes + §9.3 Revues de direction (P5 final)
+app.use('/api/v1/audits', auditsRouter)
+app.use('/api/v1/reviews', reviewsRouter)
 
 // 404
 app.use((_req, res) => {

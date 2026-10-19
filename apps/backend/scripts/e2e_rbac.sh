@@ -321,6 +321,39 @@ fi
 check 'TA deprecate V1 → 200'                              200       "$TA_TOKEN"  POST "/documents/$DOC_ID/deprecate" '{"change_reason":"E2E clôture"}'
 check 'TA DELETE V1 déprécié → 204'                        204       "$TA_TOKEN"  DELETE "/documents/$DOC_ID" '{}'
 
+echo "-- §9.2/§9.3 Audits internes + revues de direction --"
+check 'OP GET /audits → 200 (répondant)'                    200       "$OP_TOKEN"  GET /audits
+check 'OP POST /audits → 403 internal_audit.manage'         403       "$OP_TOKEN"  POST /audits '{"title":"X","scope":"Y","criteria":"Z","auditor_id":"00000000-0000-0000-0000-000000000001"}'
+check 'OP POST /reviews → 403 management_review.manage'     403       "$OP_TOKEN"  POST /reviews '{"title":"X"}'
+QM_UID_E2E=$(curl -s -m 20 "$API_URL/users" -H "Authorization: Bearer $TA_TOKEN" | python3 -c "import sys,json;print(next((u['id'] for u in json.load(sys.stdin).get('users',[]) if u['email']=='$RBAC_QM_EMAIL'),''))" 2>/dev/null)
+TA_UID_E2E=$(curl -s -m 20 "$API_URL/users" -H "Authorization: Bearer $TA_TOKEN" | python3 -c "import sys,json;print(next((u['id'] for u in json.load(sys.stdin).get('users',[]) if u['email']=='$RBAC_TA_EMAIL'),''))" 2>/dev/null)
+check 'QM auto-audit → 400 ERR_AUTO_AUDIT (§F.4)'           400       "$QM_TOKEN"  POST /audits "{\"title\":\"E2E auto\",\"scope\":\"x-test\",\"criteria\":\"x-test\",\"auditor_id\":\"$QM_UID_E2E\"}"
+AUD_BODY="{\"title\":\"E2E RBAC audit\",\"scope\":\"Processus E2E\",\"criteria\":\"ISO 9001 E2E\",\"auditor_id\":\"$TA_UID_E2E\"}"
+CODE=$(curl -s -m 20 -o "$BODY_FILE" -w '%{http_code}' -X POST "$API_URL/audits" -H "Authorization: Bearer $QM_TOKEN" -H 'Content-Type: application/json' -d "$AUD_BODY")
+AUD_ID=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("audit",{}).get("id",""))' "$BODY_FILE" 2>/dev/null)
+if [ "$CODE" = 201 ] && [ -n "$AUD_ID" ]; then
+  PASS=$((PASS + 1)); echo "  ✓ QM crée l audit (auditeur distinct) → 201"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ création audit → $CODE | $(head -c 120 "$BODY_FILE")"
+fi
+check 'start → 200'                                          200       "$QM_TOKEN"  POST "/audits/$AUD_ID/start" '{}'
+check 'constat (process owner=OP) → 201'                     201       "$QM_TOKEN"  POST "/audits/$AUD_ID/findings" "{\"title\":\"Écart E2E\",\"description\":\"Constat de test E2E\",\"classification\":\"minor\",\"process_owner_id\":\"$E2E_MEMBER_UID\"}"
+check '2e constat (pour test mêmes mains) → 201'             201       "$QM_TOKEN"  POST "/audits/$AUD_ID/findings" "{\"title\":\"Écart E2E n2\",\"description\":\"Second constat de test\",\"classification\":\"observation\"}"
+FIND_IDS=$(curl -s -m 20 "$API_URL/audits/$AUD_ID" -H "Authorization: Bearer $QM_TOKEN" | python3 -c 'import sys,json;print(" ".join(f["id"] for f in json.load(sys.stdin).get("findings",[])))' 2>/dev/null)
+F1=$(echo "$FIND_IDS" | cut -d' ' -f1); F2=$(echo "$FIND_IDS" | cut -d' ' -f2)
+check 'OP répond au constat F1 → 200'                        200       "$OP_TOKEN"  POST "/audits/findings/$F1/respond" '{"response":"Cause identifiée","corrective_action":"Correction planifiée"}'
+check 'QM vérifie F1 (distinct d OP) → 200 efficace'         200       "$QM_TOKEN"  POST "/audits/findings/$F1/verify" '{"effective":true,"comment":"Preuve conforme"}'
+check 'QM répond au constat F2 → 200'                        200       "$QM_TOKEN"  POST "/audits/findings/$F2/respond" '{"response":"Réponse auditeur-test"}'
+check 'QM vérifie F2 (mêmes mains) → 400 SAME_PERSON'        400       "$QM_TOKEN"  POST "/audits/findings/$F2/verify" '{"effective":true}'
+check 'TA vérifie F2 (distinct) → 200 efficace'              200       "$TA_TOKEN"  POST "/audits/findings/$F2/verify" '{"effective":true}'
+check 'close audit → 200'                                    200       "$QM_TOKEN"  POST "/audits/$AUD_ID/close" '{"summary":"Audit E2E conduit et vérifié"}'
+check 'revue QM create → 201'                                201       "$QM_TOKEN"  POST /reviews '{"title":"E2E Revue direction"}'
+RV_ID=$(curl -s -m 20 "$API_URL/reviews" -H "Authorization: Bearer $QM_TOKEN" | python3 -c "import sys,json;print(next((r['id'] for r in json.load(sys.stdin).get('reviews',[]) if r['title']=='E2E Revue direction'),''))" 2>/dev/null)
+check 'hold sans entrées/décisions → 409'                    409       "$QM_TOKEN"  POST "/reviews/$RV_ID/hold" '{}'
+check 'prefill consolidé → 200'                              200       "$QM_TOKEN"  POST "/reviews/$RV_ID/prefill" '{}'
+check 'décisions + actions → 200'                            200       "$QM_TOKEN"  PUT "/reviews/$RV_ID" '{"decisions":[{"decision":"E2E décision","owner":"quality_manager"}],"actions":[{"action":"E2E action","due":"2027-01-31"}]}'
+check 'hold → 200 (tenue avec entrées + décisions)'          200       "$QM_TOKEN"  POST "/reviews/$RV_ID/hold" '{}'
+
 echo "-- session : GET /me (permissions pour le gating frontend) --"
 check 'OP GET /me → 200 avec permissions'                      200        "$OP_TOKEN"  GET /me
 check 'QM GET /me → 200'                                       200        "$QM_TOKEN"  GET /me
