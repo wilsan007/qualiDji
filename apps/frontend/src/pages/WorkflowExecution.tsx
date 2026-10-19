@@ -256,10 +256,8 @@ export default function WorkflowExecution() {
                   <AIGuidancePanel
                     actionId={actionId!}
                     stepId={step.id}
-                    onMicroStepSelect={(ms) => {
-                      if (ms.prefill_source) {
-                        setValues((prev) => ({ ...prev, [step.id]: `Pré-rempli (${ms.prefill_source})` }))
-                      }
+                    onSuggestion={(instruction) => {
+                      setValues((prev) => ({ ...prev, [step.id]: instruction }))
                     }}
                   />
                   <EvidenceUploader actionId={actionId!} stepId={step.id} />
