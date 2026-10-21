@@ -44,6 +44,30 @@ cp apps/frontend/.env.example apps/frontend/.env
 pnpm dev
 ```
 
+## Tests
+
+```bash
+# Tests unitaires backend (offline : matrice, RBAC, IA, rate limiter, file hors ligne)
+pnpm --filter @iso/backend test
+
+# Tests unitaires frontend (vitest + jsdom + @testing-library) — 60 tests
+pnpm --filter @iso/frontend test
+
+# E2E backend (103 checks) : nécessite une pile Supabase locale et les comptes de test
+npx supabase start
+npx supabase db reset
+pnpm --filter @iso/backend provision:e2e     # crée le tenant + les 4 comptes de test
+pnpm --filter @iso/backend test:e2e
+
+# Smoke test frontend (Playwright / Chromium)
+pnpm --filter @iso/frontend test:e2e:install   # navigateur (une seule fois)
+pnpm --filter @iso/frontend test:e2e
+```
+
+Les tests E2E sont rejoués automatiquement par le job `e2e` de la CI
+(`.github/workflows/ci.yml`) : pile Supabase fraîche → `db reset` →
+provisionnement des comptes → backend → suite E2E → smoke test Playwright.
+
 ## Règle absolue (§1.1)
 
 Le système ne reproduit pas le texte intégral protégé de la norme ISO.

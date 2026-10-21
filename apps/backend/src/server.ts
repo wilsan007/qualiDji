@@ -29,8 +29,31 @@ import { rateLimit } from './lib/rateLimiter'
 const app: express.Application = express()
 const PORT = Number(process.env.PORT ?? 4000)
 
+/**
+ * Origines CORS autorisées (V5 §15).
+ * - CORS_ORIGIN : liste d'origines séparées par des virgules (prioritaire).
+ * - défaut : origines de développement locales (vite dev 5173/5174).
+ * En production, CORS_ORIGIN DOIT être défini explicitement (une seule
+ * origine) — cf. docs/DEPLOIEMENT.md.
+ */
+const ALLOWED_ORIGINS = (process.env.CORS_ORIGIN ?? 'http://localhost:5173,http://localhost:5174')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean)
+
 app.use(helmet())
-app.use(cors({ origin: process.env.CORS_ORIGIN ?? 'http://localhost:5173', credentials: true }))
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Requêtes sans en-tête Origin (curl, tests unitaires, healthcheck) : autorisées.
+      if (!origin) return callback(null, true)
+      if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true)
+      // Origine refusée : pas d'en-tête Access-Control-Allow-Origin.
+      return callback(null, false)
+    },
+    credentials: true,
+  }),
+)
 app.use(express.json({ limit: '2mb' }))
 
 // Health
@@ -59,7 +82,10 @@ app.get('/api/v1/me', requireAuth, async (req, res) => {
 
 // API v1 — limitation de débit (§15) : fenêtre fixe par IP, generous enough
 // pour le dev et l'E2E (~80 requêtes/run) ; 429 + Retry-After au-delà.
-app.use('/api/v1', rateLimit({ limit: 600, windowMs: 10 * 60 * 1000 }))
+// RATE_LIMIT_API permet d'ajuster la fenêtre sans redéploiement.
+const API_RATE_LIMIT = Number(process.env.RATE_LIMIT_API ?? 600)
+const API_RATE_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 10 * 60 * 1000)
+app.use('/api/v1', rateLimit({ limit: API_RATE_LIMIT, windowMs: API_RATE_WINDOW_MS }))
 app.use('/api/v1/tenants', tenantsRouter)
 app.use('/api/v1/auth', (req, res) => {
   res.status(404).json({ error: 'auth routes handled by Supabase client' })

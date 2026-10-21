@@ -40,6 +40,107 @@ jobs:
       - name: Build frontend
         run: pnpm --filter @iso/frontend build
 
-      # L'E2E (scripts/e2e_rbac.sh, ~71 checks) exige Supabase + comptes de test :
-      # il reste scripté et manuel (voir README) — à automatiser via un job
-      # supabase start quand l'infra CI le supportera.
+      # Tests frontend (vitest + jsdom + @testing-library) : 60 tests covering
+      # le gating par permissions, la file hors ligne, la couche API, les
+      # composants Audits / Revues / Layout. Aucun réseau requis.
+      - name: Tests unitaires frontend
+        run: pnpm --filter @iso/frontend test
+
+  e2e:
+    name: E2E (Supabase local)
+    runs-on: ubuntu-latest
+    needs: checks
+    # La pile Supabase locale requiert Docker (déjà présent sur ubuntu-latest).
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # ── Pile Supabase locale (project_id = qualidji, config.toml) ───────
+      # Version de la CLI épinglée (reproductibilité du job).
+      - name: Démarrage de la pile Supabase
+        run: |
+          npx supabase@2.109.1 start
+          # Reset explicite : le job doit repartir d'une base vide, avec les
+          # migrations appliquées depuis zéro et les seeds rejoués.
+          npx supabase@2.109.1 db reset
+          npx supabase@2.109.1 status -o env > /tmp/sb_env.txt
+          {
+            echo "SUPABASE_URL=$(grep '^API_URL=' /tmp/sb_env.txt | cut -d= -f2- | tr -d '\"')"
+            echo "SUPABASE_ANON_KEY=$(grep '^ANON_KEY=' /tmp/sb_env.txt | cut -d= -f2- | tr -d '\"')"
+            echo "SUPABASE_SERVICE_ROLE_KEY=$(grep '^SERVICE_ROLE_KEY=' /tmp/sb_env.txt | cut -d= -f2- | tr -d '\"')"
+          } >> "$GITHUB_ENV"
+          echo "SUPABASE_URL=$SUPABASE_URL"
+
+      # ── Provisionnement des comptes E2E (tenant + 4 rôles V5) ───────────
+      - name: Provisionnement des comptes de test
+        run: pnpm --filter @iso/backend exec tsx scripts/provision_e2e.ts
+        env:
+          E2E_PASSWORD: Qualidji!RBAC2026
+
+      # ── Backend + suite E2E (103 checks) ────────────────────────────────
+      - name: Démarrage du backend
+        run: |
+          (cd apps/backend && npx tsx src/server.ts > /tmp/backend.log 2>&1 &)
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:4000/health > /dev/null; then
+              echo "backend prêt (${i}s)"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::le backend n'a pas démarré"; cat /tmp/backend.log; exit 1
+        env:
+          PORT: 4000
+          # Le smoke test frontend est servi sur 5174 (vite preview) :
+          # l'origine doit être autorisée par le backend.
+          CORS_ORIGIN: http://localhost:5174
+          # Marge large : la suite E2E enchaîne ~100 appels depuis la même IP.
+          RATE_LIMIT_API: 2000
+
+      - name: Suite E2E (RBAC, modules B/G/H, IA, documents, audits)
+        run: |
+          cd apps/backend
+          API_URL=http://localhost:4000/api/v1 \
+          AUTH_URL="$(grep '^API_URL=' /tmp/sb_env.txt | cut -d= -f2- | tr -d '"')/auth/v1" \
+          ANON_KEY="$SUPABASE_ANON_KEY" \
+          RBAC_PASSWORD=Qualidji!RBAC2026 \
+          bash scripts/e2e_rbac.sh
+
+      # ── Smoke test frontend (Playwright, Chromium) ──────────────────────
+      # Le frontend est buildé contre la pile locale (mêmes clés que le
+      # backend), puis servi par `vite preview` le temps du test.
+      - name: Installation du navigateur (Playwright)
+        run: pnpm --filter @iso/frontend exec playwright install --with-deps chromium
+
+      - name: Build frontend (cible locale)
+        run: |
+          cd apps/frontend
+          # Les variables d'environnement du runner priment sur le .env local
+          # (absent en CI) : le build cible la pile Supabase du job.
+          VITE_SUPABASE_URL="$SUPABASE_URL" \
+          VITE_SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY" \
+          VITE_API_URL=http://localhost:4000/api/v1 \
+          npx vite build
+
+      - name: Smoke test frontend (Playwright)
+        run: pnpm --filter @iso/frontend exec playwright test
+        env:
+          E2E_BASE_URL: http://localhost:5174
+          E2E_EMAIL: operator.test@qualidji.fr
+          E2E_PASSWORD: Qualidji!RBAC2026
+          CI: true
+
+      - name: Journal du backend (en cas d'échec)
+        if: failure()
+        run: cat /tmp/backend.log
+

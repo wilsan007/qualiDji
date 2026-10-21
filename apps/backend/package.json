@@ -13,7 +13,8 @@
     "test:ai": "tsx scripts/test_ai_controls.ts",
     "test:hardening": "tsx scripts/test_rate_limiter.ts",
     "test:offline": "tsx scripts/test_offline_queue.ts",
-    "test:e2e": "bash scripts/e2e_rbac.sh"
+    "test:e2e": "bash scripts/e2e_rbac.sh",
+    "provision:e2e": "tsx scripts/provision_e2e.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.46.1",
