@@ -11,7 +11,7 @@ const permissionCache = new Map<string, Set<string>>()
 const CACHE_TTL_MS = 5 * 60 * 1000
 const cacheTimestamps = new Map<string, number>()
 
-async function getPermissionsForRole(role: string): Promise<Set<string>> {
+export async function getPermissionsForRole(role: string): Promise<Set<string>> {
   const now = Date.now()
   const cached = permissionCache.get(role)
   const ts = cacheTimestamps.get(role)

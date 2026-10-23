@@ -170,8 +170,8 @@ router.get('/audit-pack', requireAuth, requireTenant, requirePermission('audit.e
     const ncCapa = await loadNcCapaReport(tenantId)
 
     const [{ count: wfTotal }, { count: wfPublished }, { count: reqTotal }, { count: assessTotal }] = await Promise.all([
-      supabaseAdmin.from('workflow_definitions').select('id', { count: 'exact', head: true }),
-      supabaseAdmin.from('workflow_definitions').select('id', { count: 'exact', head: true }).eq('status', 'published'),
+      supabaseAdmin.from('workflow_definitions').select('id', { count: 'exact', head: true }).or(`and(tenant_id.is.null,status.eq.published),tenant_id.eq.${tenantId}`),
+      supabaseAdmin.from('workflow_definitions').select('id', { count: 'exact', head: true }).eq('status', 'published').or(`tenant_id.is.null,tenant_id.eq.${tenantId}`),
       supabaseAdmin.from('requirements').select('id', { count: 'exact', head: true }),
       supabaseAdmin.from('requirement_assessments').select('id', { count: 'exact', head: true }).eq('tenant_id', tenantId),
     ])

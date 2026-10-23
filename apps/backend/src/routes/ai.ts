@@ -78,7 +78,9 @@ router.post(
       .select('*, workflow_definitions(*), workflow_steps(*)')
       .eq('id', actionId)
       .single()
-    if (!action || (action.workflow_definitions as any)?.status !== 'published') {
+    const wdef = action?.workflow_definitions as any
+    // workflow publié ET visible du tenant (global ou propre) — jamais celui d'un autre tenant
+    if (!action || wdef?.status !== 'published' || (wdef.tenant_id != null && wdef.tenant_id !== tenantId)) {
       return res.status(404).json({ error: 'action not found (workflow non publié)' })
     }
     const steps: StepLike[] = ((action.workflow_steps as any[]) ?? [])

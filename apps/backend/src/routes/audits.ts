@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import type { Router as ExpressRouter } from 'express'
 import { z } from 'zod'
-import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '../middleware/auth'
+import { requireAuth, requireTenant, requirePermission, requireAnyPermission, getPermissionsForRole, AuthedRequest } from '../middleware/auth'
 import { supabaseAdmin } from '../lib/supabase'
 import { notifyUsers } from '../lib/notify'
 
@@ -12,6 +12,10 @@ import { notifyUsers } from '../lib/notify'
  * répondant, réouverture si efficacité non conforme.
  */
 const router: ExpressRouter = Router()
+
+/** Rôles habilités à être désignés auditeur (contrôlé côté serveur, pas seulement dans le formulaire). */
+const AUDITOR_ROLES = ['tenant_admin', 'quality_manager', 'internal_auditor']
+const ACCESS_AUDITS = ['internal_audit.manage', 'internal_audit.respond']
 
 const auditInput = z.object({
   title: z.string().min(3).max(300),
@@ -54,15 +58,14 @@ router.get('/members/eligible', requireAuth, requireTenant, requirePermission('i
   const { data: listed } = await supabaseAdmin.auth.admin.listUsers()
   const emails = new Map((listed?.users ?? []).map((u) => [u.id, u.email]))
   const members = (profiles ?? []).map((p) => ({ ...p, email: emails.get(p.id) ?? null }))
-  const AUDITOR_ROLES = ['tenant_admin', 'quality_manager', 'internal_auditor']
   res.json({
     auditors: members.filter((m) => AUDITOR_ROLES.includes(m.role)),
     members,
   })
 })
 
-// ── Liste (auditeurs et répondants voient le programme) ─────────────────────
-router.get('/', requireAuth, requireTenant, requirePermission('internal_audit.respond'), async (req: AuthedRequest, res) => {
+// ── Liste : gestionnaires d'audit (manage) ET répondants (respond) voient le programme ──
+router.get('/', requireAuth, requireTenant, requireAnyPermission(ACCESS_AUDITS), async (req: AuthedRequest, res) => {
   const { data: audits, error } = await supabaseAdmin
     .from('internal_audits')
     .select('*')
@@ -83,7 +86,7 @@ router.get('/', requireAuth, requireTenant, requirePermission('internal_audit.re
 })
 
 // ── Détail ──────────────────────────────────────────────────────────────────
-router.get('/:id', requireAuth, requireTenant, requirePermission('internal_audit.respond'), async (req: AuthedRequest, res) => {
+router.get('/:id', requireAuth, requireTenant, requireAnyPermission(ACCESS_AUDITS), async (req: AuthedRequest, res) => {
   const { data: audit } = await supabaseAdmin
     .from('internal_audits').select('*').eq('tenant_id', req.user!.tenant_id!).eq('id', req.params.id).single()
   if (!audit) return res.status(404).json({ error: 'audit not found' })
@@ -108,6 +111,9 @@ router.post('/', requireAuth, requireTenant, requirePermission('internal_audit.m
   const { data: auditor } = await supabaseAdmin
     .from('user_profiles').select('id, role').eq('id', input.auditor_id).eq('tenant_id', req.user!.tenant_id!).single()
   if (!auditor) return res.status(400).json({ error: 'auditeur introuvable dans le tenant' })
+  if (!AUDITOR_ROLES.includes(auditor.role)) {
+    return res.status(400).json({ error: `le rôle ${auditor.role} ne peut pas être désigné auditeur`, code: 'ERR_AUDITOR_ROLE' })
+  }
 
   const { data: audit, error } = await supabaseAdmin
     .from('internal_audits')
@@ -167,6 +173,18 @@ router.post('/:id/findings', requireAuth, requireTenant, requirePermission('inte
   const { data: audit } = await supabaseAdmin.from('internal_audits').select('*').eq('tenant_id', req.user!.tenant_id!).eq('id', req.params.id).single()
   if (!audit) return res.status(404).json({ error: 'audit not found' })
   if (audit.status !== 'in_progress') return res.status(409).json({ error: 'constats possibles uniquement pendant la réalisation' })
+  if (input.process_owner_id) {
+    const { data: owner } = await supabaseAdmin
+      .from('user_profiles').select('id, role').eq('id', input.process_owner_id).eq('tenant_id', req.user!.tenant_id!).maybeSingle()
+    if (!owner) return res.status(400).json({ error: 'responsable de processus introuvable dans le tenant', code: 'ERR_PROCESS_OWNER' })
+    // Le responsable désigné doit pouvoir répondre, sinon le constat resterait bloqué
+    if (!(await getPermissionsForRole(owner.role)).has('internal_audit.respond')) {
+      return res.status(400).json({
+        error: `le rôle ${owner.role} ne peut pas répondre aux constats (internal_audit.respond) — désignez un autre responsable`,
+        code: 'ERR_PROCESS_OWNER',
+      })
+    }
+  }
 
   const { data: finding, error } = await supabaseAdmin
     .from('audit_findings')
@@ -200,6 +218,14 @@ router.post('/findings/:id/respond', requireAuth, requireTenant, requirePermissi
   if (!finding) return res.status(404).json({ error: 'finding not found' })
   if (!['open', 'responded', 'reopened'].includes(finding.status)) {
     return res.status(409).json({ error: `cannot respond: status is ${finding.status}` })
+  }
+  // La réponse appartient au responsable de processus désigné (§F.4) ; sans responsable désigné,
+  // tout détenteur de internal_audit.respond peut répondre.
+  if (finding.process_owner_id && finding.process_owner_id !== req.user!.id) {
+    return res.status(403).json({
+      error: 'seul le responsable de processus désigné peut répondre à ce constat',
+      code: 'ERR_NOT_PROCESS_OWNER',
+    })
   }
   const now = new Date().toISOString()
   const { error } = await supabaseAdmin.from('audit_findings').update({

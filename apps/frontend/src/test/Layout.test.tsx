@@ -80,6 +80,14 @@ describe('Layout', () => {
     expect(screen.getByText('Revues direction')).toBeInTheDocument()
   })
 
+  it("les gestionnaires d'audit (manage SANS respond : internal_auditor, tenant_admin) voient « Audits internes » (H1)", async () => {
+    setUser(['internal_audit.manage'], 'internal_auditor')
+    renderLayout('/dashboard')
+
+    await screen.findByText('Zone de contenu')
+    expect(screen.getByText('Audits internes')).toBeInTheDocument()
+  })
+
   it('le titre de page suit la route courante', async () => {
     setUser(['internal_audit.respond'])
     renderLayout('/audits')

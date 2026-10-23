@@ -48,6 +48,11 @@ interface AssessmentRow {
   na_approved_at: string | null
   last_reason: string | null
   updated_at: string
+  /** Surcharges K.2 propres au tenant (le catalogue global n'est jamais modifié par un tenant). */
+  process_owner: string | null
+  software_control: string | null
+  objective_evidence: string | null
+  verification_method: string | null
 }
 
 interface TestRow {
@@ -130,9 +135,17 @@ async function loadMatrix(tenantId: string): Promise<{
   const lines = requirements.map((r) => {
     const assessment = assessByReq.get(r.id) ?? null
     const lineTests = testsByReq.get(r.id) ?? { positive: null, negative: null }
-    const state = computeState(r, assessment, lineTests, reservesPerimeters)
-    return {
+    // Valeur effective = surcharge du tenant sinon valeur du catalogue global
+    const eff: RequirementRow = {
       ...r,
+      process_owner: assessment?.process_owner ?? r.process_owner,
+      software_control: assessment?.software_control ?? r.software_control,
+      objective_evidence: assessment?.objective_evidence ?? r.objective_evidence,
+      verification_method: assessment?.verification_method ?? r.verification_method,
+    }
+    const state = computeState(eff, assessment, lineTests, reservesPerimeters)
+    return {
+      ...eff,
       workflow_codes: workflowsByReq.get(r.id) ?? [],
       assessment,
       tests: lineTests,
@@ -428,10 +441,8 @@ router.patch(
     const value = body[field]
     if (typeof value === 'string') catalogPatch[field] = value.trim()
   }
-  if (Object.keys(catalogPatch).length > 0) {
-    const { error } = await supabaseAdmin.from('requirements').update(catalogPatch).eq('id', id)
-    if (error) return res.status(400).json({ error: error.message })
-  }
+  // Les champs K.2 sont des SURCHARGES du tenant (requirement_assessments) : le catalogue global
+  // `requirements` n'est jamais écrit depuis l'API tenant (C5).
 
   // Applicabilité / non-applicabilité (étape K.4)
   const { data: existing } = await supabaseAdmin
@@ -465,6 +476,7 @@ router.patch(
       last_reason: reason,
       updated_by: req.user!.id,
       updated_at: now,
+      ...catalogPatch,
     },
     { onConflict: 'tenant_id,requirement_id' }
   )
@@ -503,6 +515,9 @@ router.post(
     .eq('id', id)
     .single()
   if (!reqRow) return res.status(404).json({ error: 'Exigence introuvable.', code: 'ERR_NOT_FOUND' })
+  const { data: override } = await supabaseAdmin
+    .from('requirement_assessments').select('verification_method').eq('tenant_id', tenantId).eq('requirement_id', id).maybeSingle()
+  const effectiveMethod = override?.verification_method ?? reqRow.verification_method
 
   const now = new Date().toISOString()
   const executed = status === 'todo' ? null : now
@@ -514,7 +529,7 @@ router.post(
         requirement_id: id,
         kind,
         code: `MT-${reqRow.source_ref}-${kind === 'positive' ? 'POS' : 'NEG'}`,
-        scenario: body.scenario ?? reqRow.verification_method,
+        scenario: body.scenario ?? effectiveMethod,
         status,
         notes: body.notes?.trim() || null,
         executed_by: executed ? req.user!.id : null,
