@@ -134,6 +134,36 @@ check 'QM POST /nonconformities/<fake>/capa → pas 403/500'     '!403,500' "$QM
 check 'OP DELETE /evidence/<fake> → 403 capa.close'            403        "$OP_TOKEN"  DELETE "/evidence/$FAKE_UUID"
 check 'QM DELETE /evidence/<fake> → pas 403/500 (404 attendu)' '!403,500' "$QM_TOKEN"  DELETE "/evidence/$FAKE_UUID"
 
+# Parcours RÉEL (sans UUID factice) : les checks ci-dessus n'excluent que 403/500
+# et ne détectaient donc pas une insertion CAPA qui échouait en 400.
+echo "-- NC → CAPA → efficacité → registre (parcours réel) --"
+pyget() { python3 -c 'import json,sys;d=json.load(open(sys.argv[1]))
+for k in sys.argv[2].split("."):
+    d=d.get(k,{}) if isinstance(d,dict) else {}
+print(d if d!={} else "")' "$BODY_FILE" "$1" 2>/dev/null; }
+check 'QM POST /nonconformities → 201'                         201        "$QM_TOKEN"  POST /nonconformities '{"title":"E2E NC parcours CAPA","severity":"minor"}'
+NC_ID=$(pyget nonconformity.id)
+check 'QM POST /nonconformities/<réel>/capa → 201'             201        "$QM_TOKEN"  POST "/nonconformities/$NC_ID/capa" '{"root_cause":"cause E2E","corrective_action":"action E2E","responsible":"Resp E2E","due_date":"2030-12-31"}'
+CAPA_ID=$(pyget capa.id)
+if [ "$(pyget capa.responsible)" = "Resp E2E" ] && [ "$(pyget capa.due_date)" = "2030-12-31" ]; then
+  PASS=$((PASS + 1)); echo "  ✓ CAPA créée avec responsable et échéance persistés"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ CAPA : responsable/échéance non persistés | $(head -c 160 "$BODY_FILE")"
+fi
+CODE=$(curl -s -m 20 "$API_URL/nonconformities" -H "Authorization: Bearer $QM_TOKEN" | python3 -c "import sys,json;print('oui' if any(n['id']=='$NC_ID' and (n.get('capa') or {}).get('id')=='$CAPA_ID' for n in json.load(sys.stdin).get('nonconformities',[])) else 'non')" 2>/dev/null)
+if [ "$CODE" = "oui" ]; then
+  PASS=$((PASS + 1)); echo "  ✓ GET /nonconformities : la NC porte sa CAPA (nc.capa)"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ GET /nonconformities : nc.capa absent (le formulaire CAPA se réaffiche à l'infini)"
+fi
+check 'QM effectiveness-check (efficace) → 200 verified'       200        "$QM_TOKEN"  POST "/nonconformities/capas/$CAPA_ID/effectiveness-check" '{"effective":true,"comments":"effective"}'
+CODE=$(curl -s -m 20 "$API_URL/reports/nc-capa" -H "Authorization: Bearer $QM_TOKEN" | python3 -c "import sys,json;r=[x for x in json.load(sys.stdin).get('rows',[]) if x['id']=='$NC_ID'];print('oui' if r and r[0]['capa_responsible']=='Resp E2E' and r[0]['capa_due_date']=='2030-12-31' and r[0]['capa_status']=='verified' else 'non')" 2>/dev/null)
+if [ "$CODE" = "oui" ]; then
+  PASS=$((PASS + 1)); echo "  ✓ registre /reports/nc-capa : responsable, échéance et statut CAPA remplis"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ registre /reports/nc-capa : champs CAPA vides ou faux"
+fi
+
 echo "-- evidence.read / action.submit --"
 check 'OP GET /evidence/<fake> → pas 403/500'                  '!403,500' "$OP_TOKEN"  GET "/evidence/$FAKE_UUID"
 # Ce endpoint répond 403 'tenant isolation' (et non 404) quand l'action parente n'existe pas :
@@ -353,6 +383,196 @@ check 'hold sans entrées/décisions → 409'                    409       "$QM_
 check 'prefill consolidé → 200'                              200       "$QM_TOKEN"  POST "/reviews/$RV_ID/prefill" '{}'
 check 'décisions + actions → 200'                            200       "$QM_TOKEN"  PUT "/reviews/$RV_ID" '{"decisions":[{"decision":"E2E décision","owner":"quality_manager"}],"actions":[{"action":"E2E action","due":"2027-01-31"}]}'
 check 'hold → 200 (tenue avec entrées + décisions)'          200       "$QM_TOKEN"  POST "/reviews/$RV_ID/hold" '{}'
+
+# ============================================================================
+# Moteur d'exécution (C4) : parcours COMPLET de WF_CONTEXT_ANALYSIS / ACT_CTX_001
+#   création → assignation → saisie validée serveur → soumission → rejet →
+#   re-soumission → approbation, ségrégation des tâches, notifications, audit.
+# Rôles : QM = quality_manager (assigne/approuve), OP = operator (exécute),
+#         TA = tenant_admin (exécute ET approuve → teste la ségrégation),
+#         MEMBER = reader (aucun droit d'exécution).
+# ============================================================================
+echo "-- C4 : parcours complet WF_CONTEXT_ANALYSIS (création → exécution → approbation) --"
+MEMBER_TOKEN="$(login e2e.member@qualidji.fr)"
+USERS_JSON="$(curl -s -m 20 "$API_URL/users" -H "Authorization: Bearer $TA_TOKEN")"
+uid_of() { printf '%s' "$USERS_JSON" | python3 -c "import sys,json;print(next((u['id'] for u in json.load(sys.stdin).get('users',[]) if u['email']=='$1'),''))" 2>/dev/null; }
+OP_ID="$(uid_of operator.test@qualidji.fr)"; TA_ID="$(uid_of ta.test@qualidji.fr)"; MEMBER_ID="$(uid_of e2e.member@qualidji.fr)"
+S1=ST_CTX_001_01; S2=ST_CTX_001_02; S3=ST_CTX_001_03; S4=ST_CTX_001_04
+TXT60="$(printf 'facteur-%.0s' 1 2 3 4 5 6 7 8)"          # 64 caractères ≥ min_length:50
+JUST100="$(printf 'justification-%.0s' 1 2 3 4 5 6 7 8)"  # 104 caractères ≥ 100
+act_status() { curl -s -m 20 "$API_URL/actions/$1" -H "Authorization: Bearer $QM_TOKEN" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("action",{}).get("status",""))' 2>/dev/null; }
+expect_eq() { if [ "$2" = "$3" ]; then PASS=$((PASS + 1)); echo "  ✓ $1"; else FAIL=$((FAIL + 1)); echo "  ✗ $1 (attendu '$3', obtenu '$2')"; fi; }
+
+# --- Création / assignation ---------------------------------------------------
+check 'OP POST /actions → 403 action.assign'                      403 "$OP_TOKEN" POST /actions "{\"action_def_id\":\"ACT_CTX_001\",\"assigned_to\":\"$OP_ID\"}"
+check 'QM POST /actions (payload invalide) → 400'                 400 "$QM_TOKEN" POST /actions '{"action_def_id":"ACT_CTX_001"}'
+check 'QM POST /actions (définition inconnue) → 404'              404 "$QM_TOKEN" POST /actions "{\"action_def_id\":\"ACT_INCONNUE\",\"assigned_to\":\"$OP_ID\"}"
+check 'QM POST /actions → assigné sans action.execute (reader) → 400' 400 "$QM_TOKEN" POST /actions "{\"action_def_id\":\"ACT_CTX_001\",\"assigned_to\":\"$MEMBER_ID\"}"
+check 'QM POST /actions → assigné hors tenant (UUID inconnu) → 400'   400 "$QM_TOKEN" POST /actions '{"action_def_id":"ACT_CTX_001","assigned_to":"00000000-0000-4000-8000-000000000001"}'
+check 'QM POST /actions → 201 (ACT_CTX_001 → OP)'                 201 "$QM_TOKEN" POST /actions "{\"action_def_id\":\"ACT_CTX_001\",\"assigned_to\":\"$OP_ID\",\"due_at\":\"2030-12-31T00:00:00Z\"}"
+A1="$(pyget action.id)"
+expect_eq "action créée au statut 'assigned'" "$(pyget action.status)" assigned
+expect_eq "assigned_by = l'assignateur (QM) renseigné" "$([ -n "$(pyget action.assigned_by)" ] && echo oui || echo non)" oui
+
+# --- Visibilité ---------------------------------------------------------------
+check 'OP GET /actions/<A1> → 200 (son action)'                   200 "$OP_TOKEN" GET "/actions/$A1"
+STEPS_N="$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1])).get("action",{}).get("workflow_actions",{}).get("workflow_steps",[])))' "$BODY_FILE" 2>/dev/null)"
+expect_eq "le détail embarque les 4 étapes de la définition (l'UI n'en recevait aucune)" "$STEPS_N" 4
+check 'MEMBER (reader) GET /actions/<A1> → 404 (pas son action)'  404 "$MEMBER_TOKEN" GET "/actions/$A1"
+check 'TA GET /actions/<A1> → 200 (gestionnaire : vue du tenant)'  200 "$TA_TOKEN" GET "/actions/$A1"
+CODE=$(curl -s -m 20 "$API_URL/actions/assigned" -H "Authorization: Bearer $OP_TOKEN" | python3 -c "import sys,json;print('oui' if any(a['id']=='$A1' for a in json.load(sys.stdin).get('actions',[])) else 'non')" 2>/dev/null)
+expect_eq "OP voit l'action dans /actions/assigned" "$CODE" oui
+CODE=$(curl -s -m 20 "$API_URL/actions/assigned" -H "Authorization: Bearer $MEMBER_TOKEN" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('actions',[])))" 2>/dev/null)
+expect_eq "MEMBER (reader) ne voit aucune action dans /actions/assigned" "$CODE" 0
+
+# --- Saisie des étapes : validation serveur -----------------------------------
+check 'TA saisit une étape de l’action d’OP → 403 ERR_NOT_ASSIGNEE' 403 "$TA_TOKEN" POST "/steps/$A1/steps/$S1/submit" "{\"value\":\"$TXT60\"}"
+check 'OP étape inconnue → 404'                                   404 "$OP_TOKEN" POST "/steps/$A1/steps/ST_INCONNUE/submit" "{\"value\":\"$TXT60\"}"
+check 'OP étape 1 texte trop court (min_length:50) → 422'          422 "$OP_TOKEN" POST "/steps/$A1/steps/$S1/submit" '{"value":"trop court"}'
+check 'OP étape 1 sans valeur → 422 (réponse obligatoire)'        422 "$OP_TOKEN" POST "/steps/$A1/steps/$S1/submit" '{}'
+check 'OP étape 1 nombre au lieu de texte → 422'                  422 "$OP_TOKEN" POST "/steps/$A1/steps/$S1/submit" '{"value":123456}'
+check 'OP étape 4 (approval) saisie par l’exécutant → 422'        422 "$OP_TOKEN" POST "/steps/$A1/steps/$S4/submit" '{"value":"approved"}'
+check 'OP soumet l’action incomplète → 409 ERR_STEPS_INCOMPLETE'  409 "$OP_TOKEN" POST "/actions/$A1/submit"
+check 'OP étape 1 valide → 200'                                    200 "$OP_TOKEN" POST "/steps/$A1/steps/$S1/submit" "{\"value\":\"$TXT60\"}"
+expect_eq "la première saisie démarre l'action (in_progress)" "$(act_status "$A1")" in_progress
+check 'OP étape 2 valide → 200'                                    200 "$OP_TOKEN" POST "/steps/$A1/steps/$S2/submit" "{\"value\":\"$TXT60\"}"
+check 'OP étape 3 choix hors liste → 422'                          422 "$OP_TOKEN" POST "/steps/$A1/steps/$S3/submit" '{"value":"bogus"}'
+check 'OP étape 3 non_pertinent sans justification → 422 (garde-fou)'  422 "$OP_TOKEN" POST "/steps/$A1/steps/$S3/submit" '{"value":"non_pertinent"}'
+check 'OP étape 3 non_pertinent + justification 20 car. → 422'     422 "$OP_TOKEN" POST "/steps/$A1/steps/$S3/submit" '{"value":{"choice":"non_pertinent","justification":"trop courte vraiment"}}'
+check 'OP soumet l’action (étape 3 manquante) → 409'              409 "$OP_TOKEN" POST "/actions/$A1/submit"
+check 'OP étape 3 non_pertinent + justification ≥ 100 → 200'       200 "$OP_TOKEN" POST "/steps/$A1/steps/$S3/submit" "{\"value\":{\"choice\":\"non_pertinent\",\"justification\":\"$JUST100\"}}"
+CODE=$(curl -s -m 20 "$API_URL/actions/$A1" -H "Authorization: Bearer $OP_TOKEN" | python3 -c "import sys,json;s={x['step_id']:x['value'] for x in json.load(sys.stdin)['action']['step_submissions']};v=s.get('$S3',{});print('oui' if isinstance(v,dict) and v.get('choice')=='non_pertinent' and len(v.get('justification',''))>=100 else 'non')" 2>/dev/null)
+expect_eq "la justification est conservée avec le choix" "$CODE" oui
+# --- Preuves (C3) : fichier réellement stocké, empreinte vérifiée, accès direct fermé ----
+echo "-- C3 : preuves — dépôt réel, empreinte, URL signée, intégrité, bucket privé --"
+EV_DIR="$(mktemp -d)"; trap 'rm -f "$BODY_FILE"; rm -rf "$EV_DIR"' EXIT
+printf '%%PDF-1.7\n%% preuve E2E %s\n' "$(date +%s)" > "$EV_DIR/preuve.pdf"
+printf 'ceci est du texte et non un PDF' > "$EV_DIR/faux.pdf"
+printf '<script>alert(1)</script>' > "$EV_DIR/page.html"
+SHA_PDF="$(python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$EV_DIR/preuve.pdf")"
+STORAGE_URL="${AUTH_URL%/auth/v1}/storage/v1"
+upload() { # nom attendu jeton "query" content-type fichier [en-têtes curl…]
+  local name="$1" want="$2" tok="$3" query="$4" ctype="$5" file="$6"; shift 6
+  local code; code="$(curl -s -m 60 -o "$BODY_FILE" -w '%{http_code}' -X POST "$API_URL/evidence/upload?$query" \
+    -H "Authorization: Bearer $tok" -H "Content-Type: $ctype" "$@" --data-binary @"$file")"
+  if [ "$code" = "$want" ]; then PASS=$((PASS + 1)); printf '  ✓ %-64s → %s\n' "$name" "$code"
+  else FAIL=$((FAIL + 1)); printf '  ✗ %-64s → reçu %s, attendu %s | %s\n' "$name" "$code" "$want" "$(head -c 160 "$BODY_FILE" | tr -d '\n')"; fi
+}
+upload 'OP dépose un PDF (empreinte annoncée exacte) → 201'            201 "$OP_TOKEN" "action_id=$A1&step_id=$S1&filename=preuve.pdf" application/pdf "$EV_DIR/preuve.pdf" -H "X-Checksum-SHA256: $SHA_PDF"
+EV1="$(pyget evidence.id)"; EV1_PATH="$(pyget evidence.storage_path)"
+expect_eq "empreinte enregistrée = SHA-256 du fichier (calculée par le serveur)" "$(pyget evidence.checksum)" "$SHA_PDF"
+expect_eq "preuve rattachée à l'étape (step_id)" "$(pyget evidence.step_id)" "$S1"
+case "$EV1_PATH" in *"/$A1/"*"/preuve.pdf") PASS=$((PASS + 1)); echo "  ✓ chemin décidé par le serveur (…/<action>/<preuve>/preuve.pdf)" ;; *) FAIL=$((FAIL + 1)); echo "  ✗ chemin de stockage inattendu : $EV1_PATH" ;; esac
+upload 'OP dépose avec une empreinte annoncée fausse → 422'            422 "$OP_TOKEN" "action_id=$A1&step_id=$S1&filename=preuve.pdf" application/pdf "$EV_DIR/preuve.pdf" -H "X-Checksum-SHA256: $(printf '0%.0s' $(seq 64))"
+upload 'OP dépose du HTML → 415 (contenu actif refusé)'                415 "$OP_TOKEN" "action_id=$A1&filename=page.html" text/html "$EV_DIR/page.html"
+upload 'OP dépose un faux PDF (contenu texte) → 422'                   422 "$OP_TOKEN" "action_id=$A1&filename=faux.pdf" application/pdf "$EV_DIR/faux.pdf"
+if [ -n "${EVIDENCE_MAX_BYTES:-}" ]; then
+  head -c $((EVIDENCE_MAX_BYTES + 1)) /dev/zero | tr '\0' 'a' > "$EV_DIR/gros.txt"
+  upload "OP dépose un fichier > limite ($EVIDENCE_MAX_BYTES o) → 413"  413 "$OP_TOKEN" "action_id=$A1&filename=gros.txt" text/plain "$EV_DIR/gros.txt"
+else
+  echo "  ○ test de taille ignoré (EVIDENCE_MAX_BYTES non défini côté script)"
+fi
+upload 'OP action inconnue → 404'                                      404 "$OP_TOKEN" "action_id=00000000-0000-4000-8000-000000000001&filename=a.pdf" application/pdf "$EV_DIR/preuve.pdf"
+upload 'OP étape inconnue → 404'                                       404 "$OP_TOKEN" "action_id=$A1&step_id=ST_INCONNUE&filename=a.pdf" application/pdf "$EV_DIR/preuve.pdf"
+upload 'OP sans action_id → 400'                                       400 "$OP_TOKEN" "filename=a.pdf" application/pdf "$EV_DIR/preuve.pdf"
+upload 'MEMBER (reader, sans evidence.upload) → 403'                   403 "$MEMBER_TOKEN" "action_id=$A1&filename=a.pdf" application/pdf "$EV_DIR/preuve.pdf"
+upload 'sans jeton → 401'                                              401 "" "action_id=$A1&filename=a.pdf" application/pdf "$EV_DIR/preuve.pdf"
+upload 'TA (gestionnaire, non assigné) dépose une 2e preuve → 201'     201 "$TA_TOKEN" "action_id=$A1&filename=Rel%C3%A9v%C3%A9%20temp%C3%A9rature.pdf" application/pdf "$EV_DIR/preuve.pdf"
+EV2="$(pyget evidence.id)"
+expect_eq "nom de fichier assaini (accents/espaces)" "$(pyget evidence.value.filename)" "Releve_temperature.pdf"
+check 'legacy : POST /evidence kind=file avec chemin client → 400 ERR_USE_UPLOAD' 400 "$OP_TOKEN" POST /evidence "{\"action_id\":\"$A1\",\"step_id\":\"$S1\",\"kind\":\"file\",\"storage_path\":\"evidence/pirate.pdf\",\"checksum\":\"x\"}"
+grep -q ERR_USE_UPLOAD "$BODY_FILE" && { PASS=$((PASS + 1)); echo "  ✓ … code ERR_USE_UPLOAD"; } || { FAIL=$((FAIL + 1)); echo "  ✗ … code ERR_USE_UPLOAD absent"; }
+check 'OP POST /evidence kind=measure (sans fichier) → 201'            201 "$OP_TOKEN" POST /evidence "{\"action_id\":\"$A1\",\"step_id\":\"$S1\",\"kind\":\"measure\",\"value\":{\"temperature\":21.5,\"unit\":\"C\"}}"
+
+CODE=$(curl -s -m 20 "$API_URL/evidence?action_id=$A1" -H "Authorization: Bearer $OP_TOKEN" | python3 -c "import sys,json;ids=[e['id'] for e in json.load(sys.stdin).get('evidence',[])];print('oui' if '$EV1' in ids and '$EV2' in ids else 'non')" 2>/dev/null)
+expect_eq "GET /evidence?action_id= liste les preuves de l'action" "$CODE" oui
+check 'MEMBER (reader) GET /evidence?action_id=<A1> → 404'              404 "$MEMBER_TOKEN" GET "/evidence?action_id=$A1"
+check 'MEMBER (reader) GET /evidence/<EV1> → 404 (pas son action)'      404 "$MEMBER_TOKEN" GET "/evidence/$EV1"
+check 'MEMBER (reader) GET /evidence/<EV1>/download → 404'              404 "$MEMBER_TOKEN" GET "/evidence/$EV1/download"
+check 'OP GET /evidence/<EV1>/download → 200 (URL signée)'              200 "$OP_TOKEN" GET "/evidence/$EV1/download"
+SIGNED="$(pyget url)"; TTL="$(pyget expires_in)"
+[ "${TTL:-9999}" -le 3600 ] && { PASS=$((PASS + 1)); echo "  ✓ URL signée valable ${TTL}s (≤ 1 h)"; } || { FAIL=$((FAIL + 1)); echo "  ✗ durée de l'URL signée ${TTL}s > 1 h"; }
+curl -s -m 30 -o "$EV_DIR/dl.pdf" -w '%{http_code}' "$SIGNED" > "$EV_DIR/dl.code"
+expect_eq "téléchargement par URL signée → 200" "$(cat "$EV_DIR/dl.code")" 200
+expect_eq "le fichier téléchargé a le SHA-256 déposé (octets identiques)" "$(python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$EV_DIR/dl.pdf")" "$SHA_PDF"
+check 'OP GET /evidence/<EV1>/verify → 200'                            200 "$OP_TOKEN" GET "/evidence/$EV1/verify"
+expect_eq "intégrité : SHA-256 recalculé depuis le stockage = enregistré" "$(pyget intact)" True
+# Bucket PRIVÉ : ni le jeton d'un utilisateur ni la clé publique n'ouvrent l'objet directement
+CODE="$(curl -s -m 20 -o /dev/null -w '%{http_code}' "$STORAGE_URL/object/evidence/$EV1_PATH" -H "apikey: $ANON_KEY" -H "Authorization: Bearer $OP_TOKEN")"
+case "$CODE" in 200) FAIL=$((FAIL + 1)); echo "  ✗ lecture DIRECTE du bucket par un utilisateur authentifié → 200 (bucket ouvert !)" ;; *) PASS=$((PASS + 1)); echo "  ✓ bucket privé : lecture directe avec le jeton utilisateur refusée ($CODE)" ;; esac
+CODE="$(curl -s -m 20 -o /dev/null -w '%{http_code}' "$STORAGE_URL/object/public/evidence/$EV1_PATH" -H "apikey: $ANON_KEY")"
+case "$CODE" in 200) FAIL=$((FAIL + 1)); echo "  ✗ lecture PUBLIQUE du bucket → 200 (bucket public !)" ;; *) PASS=$((PASS + 1)); echo "  ✓ bucket privé : lecture publique refusée ($CODE)" ;; esac
+CODE="$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST "$STORAGE_URL/object/evidence/pirate.pdf" -H "apikey: $ANON_KEY" -H "Authorization: Bearer $OP_TOKEN" -H 'Content-Type: application/pdf' --data-binary @"$EV_DIR/preuve.pdf")"
+case "$CODE" in 200|201) FAIL=$((FAIL + 1)); echo "  ✗ dépôt DIRECT dans le bucket par un utilisateur → $CODE" ;; *) PASS=$((PASS + 1)); echo "  ✓ bucket privé : dépôt direct avec le jeton utilisateur refusé ($CODE)" ;; esac
+check 'OP DELETE /evidence/<EV2> → 403 capa.close'                     403 "$OP_TOKEN" DELETE "/evidence/$EV2"
+check 'QM DELETE /evidence/<EV2> → 200 (fichier retiré du stockage)'    200 "$QM_TOKEN" DELETE "/evidence/$EV2"
+check 'GET /evidence/<EV2>/download après suppression → 404'            404 "$OP_TOKEN" GET "/evidence/$EV2/download"
+
+# --- Soumission, rejet, re-soumission, approbation ----------------------------
+check 'QM approuve avant soumission → 409'                         409 "$QM_TOKEN" POST "/actions/$A1/approve" '{}'
+check 'QM (sans action.execute) soumet l’action → 403'            403 "$QM_TOKEN" POST "/actions/$A1/submit"
+check 'OP soumet l’action complète → 200'                         200 "$OP_TOKEN" POST "/actions/$A1/submit"
+expect_eq "statut 'submitted'" "$(act_status "$A1")" submitted
+check 'OP modifie une étape après soumission → 409'                409 "$OP_TOKEN" POST "/steps/$A1/steps/$S1/submit" "{\"value\":\"$TXT60\"}"
+check 'OP soumet une 2e fois → 409'                                409 "$OP_TOKEN" POST "/actions/$A1/submit"
+check 'OP approuve sa propre action → 403 action.approve'          403 "$OP_TOKEN" POST "/actions/$A1/approve" '{}'
+check 'QM rejette sans motif → 400'                                400 "$QM_TOKEN" POST "/actions/$A1/reject" '{}'
+check 'QM rejette avec motif → 200 (retour à l’exécutant)'        200 "$QM_TOKEN" POST "/actions/$A1/reject" '{"comment":"Facteurs externes trop généraux, à préciser"}'
+expect_eq "statut 'in_progress' après rejet" "$(act_status "$A1")" in_progress
+check 'OP corrige l’étape 2 après rejet → 200'                    200 "$OP_TOKEN" POST "/steps/$A1/steps/$S2/submit" "{\"value\":\"$TXT60 corrigé\"}"
+check 'OP re-soumet → 200'                                         200 "$OP_TOKEN" POST "/actions/$A1/submit"
+check 'QM approuve → 200'                                          200 "$QM_TOKEN" POST "/actions/$A1/approve" '{"comment":"Analyse conforme"}'
+expect_eq "statut 'approved'" "$(act_status "$A1")" approved
+expect_eq "reviewed_by renseigné (traçabilité de l'approbateur)" "$(curl -s -m 20 "$API_URL/actions/$A1" -H "Authorization: Bearer $QM_TOKEN" | python3 -c 'import sys,json;print("oui" if json.load(sys.stdin)["action"].get("reviewed_by") else "non")' 2>/dev/null)" oui
+CODE=$(curl -s -m 20 "$API_URL/actions/$A1" -H "Authorization: Bearer $QM_TOKEN" | python3 -c "import sys,json;s={x['step_id']:x['value'] for x in json.load(sys.stdin)['action']['step_submissions']};v=s.get('$S4',{});print('oui' if isinstance(v,dict) and v.get('decision')=='approved' else 'non')" 2>/dev/null)
+expect_eq "l'approbation est consignée comme saisie de l'étape 4" "$CODE" oui
+check 'QM ré-approuve → 409 (statut terminal)'                     409 "$QM_TOKEN" POST "/actions/$A1/approve" '{}'
+upload 'OP dépose une preuve sur une action approuvée → 409'           409 "$OP_TOKEN" "action_id=$A1&filename=tard.pdf" application/pdf "$EV_DIR/preuve.pdf"
+check 'OP déclare une exception sur action approuvée → 409'        409 "$OP_TOKEN" POST "/actions/$A1/exception" '{"reason":"trop tard"}'
+
+# --- Ségrégation des tâches : TA exécute ET possède action.approve ------------
+check 'QM POST /actions → 201 (ACT_CTX_001 → TA)'                  201 "$QM_TOKEN" POST /actions "{\"action_def_id\":\"ACT_CTX_001\",\"assigned_to\":\"$TA_ID\"}"
+A2="$(pyget action.id)"
+check 'TA étape 1 → 200'                                           200 "$TA_TOKEN" POST "/steps/$A2/steps/$S1/submit" "{\"value\":\"$TXT60\"}"
+check 'TA étape 2 → 200'                                           200 "$TA_TOKEN" POST "/steps/$A2/steps/$S2/submit" "{\"value\":\"$TXT60\"}"
+check 'TA étape 3 pertinent → 200'                                 200 "$TA_TOKEN" POST "/steps/$A2/steps/$S3/submit" '{"value":"pertinent"}'
+check 'TA soumet → 200'                                            200 "$TA_TOKEN" POST "/actions/$A2/submit"
+check 'TA approuve sa propre action → 403 ségrégation des tâches'  403 "$TA_TOKEN" POST "/actions/$A2/approve" '{}'
+grep -q 'ERR_SEGREGATION_OF_DUTIES' "$BODY_FILE" && { PASS=$((PASS + 1)); echo "  ✓ … code ERR_SEGREGATION_OF_DUTIES"; } || { FAIL=$((FAIL + 1)); echo "  ✗ … code ERR_SEGREGATION_OF_DUTIES absent"; }
+expect_eq "l'action reste 'submitted' après tentative d'auto-approbation" "$(act_status "$A2")" submitted
+check 'QM approuve l’action de TA → 200'                          200 "$QM_TOKEN" POST "/actions/$A2/approve" '{}'
+
+# --- Réassignation, exception, blocage ----------------------------------------
+check 'QM POST /actions → 201 (ACT_CTX_001 → OP, 3e instance)'      201 "$QM_TOKEN" POST /actions "{\"action_def_id\":\"ACT_CTX_001\",\"assigned_to\":\"$OP_ID\"}"
+A3="$(pyget action.id)"
+check 'OP POST /actions/<A3>/assign → 403 action.assign'           403 "$OP_TOKEN" POST "/actions/$A3/assign" "{\"assigned_to\":\"$TA_ID\"}"
+check 'QM réassigne A3 à un reader → 400'                          400 "$QM_TOKEN" POST "/actions/$A3/assign" "{\"assigned_to\":\"$MEMBER_ID\"}"
+check 'QM réassigne A3 à TA → 200'                                 200 "$QM_TOKEN" POST "/actions/$A3/assign" "{\"assigned_to\":\"$TA_ID\"}"
+check 'OP (ancien assigné) démarre A3 → 404 (n’est plus visible)'  404 "$OP_TOKEN" POST "/actions/$A3/start"
+check 'TA démarre A3 → 200'                                        200 "$TA_TOKEN" POST "/actions/$A3/start"
+check 'TA redémarre A3 → 409 (déjà in_progress)'                   409 "$TA_TOKEN" POST "/actions/$A3/start"
+check 'OP déclare une exception sur A3 (non assignée, sans approve) → 404' 404 "$OP_TOKEN" POST "/actions/$A3/exception" '{"reason":"hors périmètre"}'
+check 'TA exception sans motif → 400'                              400 "$TA_TOKEN" POST "/actions/$A3/exception" '{}'
+check 'TA exception gravité invalide → 400'                        400 "$TA_TOKEN" POST "/actions/$A3/exception" '{"reason":"écart constaté","severity":"enorme"}'
+check 'TA exception valide → 201 (NC créée)'                       201 "$TA_TOKEN" POST "/actions/$A3/exception" '{"reason":"écart constaté sur le terrain","severity":"major"}'
+expect_eq "l'exception bloque l'action" "$(act_status "$A3")" blocked
+check 'TA bloque A3 déjà bloquée → 409'                            409 "$TA_TOKEN" POST "/actions/$A3/block"
+check 'QM approuve A3 bloquée → 409'                               409 "$QM_TOKEN" POST "/actions/$A3/approve" '{}'
+
+# --- Notifications et journal d'audit -----------------------------------------
+sleep 1
+KINDS_OP="$(curl -s -m 20 "$API_URL/notifications?limit=100" -H "Authorization: Bearer $OP_TOKEN" | python3 -c 'import sys,json;print(",".join(n["kind"] for n in json.load(sys.stdin).get("notifications",[])))' 2>/dev/null)"
+for k in action.assigned action.rejected action.approved; do
+  case "$KINDS_OP" in *"$k"*) PASS=$((PASS + 1)); echo "  ✓ OP reçoit la notification $k" ;; *) FAIL=$((FAIL + 1)); echo "  ✗ OP sans notification $k | $KINDS_OP" ;; esac
+done
+TITLES_OP="$(curl -s -m 20 "$API_URL/notifications?limit=100" -H "Authorization: Bearer $OP_TOKEN" | python3 -c 'import sys,json;print("|".join(n["title"] for n in json.load(sys.stdin).get("notifications",[])))' 2>/dev/null)"
+case "$TITLES_OP" in *"Action assignée : Identifier les facteurs internes et externes"*) PASS=$((PASS + 1)); echo "  ✓ notification d'assignation : titre réel de l'action" ;; *) FAIL=$((FAIL + 1)); echo "  ✗ titre de notification incorrect | $TITLES_OP" ;; esac
+KINDS_QM="$(curl -s -m 20 "$API_URL/notifications?limit=100" -H "Authorization: Bearer $QM_TOKEN" | python3 -c 'import sys,json;print(",".join(n["kind"] for n in json.load(sys.stdin).get("notifications",[])))' 2>/dev/null)"
+case "$KINDS_QM" in *action.submitted*) PASS=$((PASS + 1)); echo "  ✓ QM reçoit action.submitted (approbation requise)" ;; *) FAIL=$((FAIL + 1)); echo "  ✗ QM sans action.submitted | $KINDS_QM" ;; esac
+AUDITS="$(curl -s -m 20 "$API_URL/audit-log" -H "Authorization: Bearer $QM_TOKEN" | python3 -c 'import sys,json;print(",".join(sorted({e["action"] for e in json.load(sys.stdin).get("events",[])})))' 2>/dev/null)"
+for k in action.create action.assign action.start step.submit action.submit action.reject action.approve action.approve_blocked action.exception evidence.upload evidence.record evidence.download evidence.delete; do
+  case ",$AUDITS," in *",$k,"*) PASS=$((PASS + 1)); echo "  ✓ journal d'audit : $k" ;; *) FAIL=$((FAIL + 1)); echo "  ✗ journal d'audit : $k absent | $AUDITS" ;; esac
+done
 
 echo "-- session : GET /me (permissions pour le gating frontend) --"
 check 'OP GET /me → 200 avec permissions'                      200        "$OP_TOKEN"  GET /me

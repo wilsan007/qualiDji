@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '../middleware/auth'
 import { supabaseAdmin } from '../lib/supabase'
 import { notifyByRoles, notifyUsers } from '../lib/notify'
+import { isSupportedGuardrail, isSupportedValidationRule } from '../lib/stepValidation'
 
 /**
  * Module B — Bibliothèque de workflows (V5 §5.2 / §6.1 / §6.3).
@@ -38,6 +39,28 @@ const stepInput = z.object({
   ai_prompt_template: z.string().max(200).nullable().optional(),
   guardrails: z.array(z.any()).default([]),
   choices: z.array(z.any()).nullable().optional(),
+}).superRefine((s, ctx) => {
+  // Le serveur applique ces règles à l'exécution : une règle qu'il ne sait pas évaluer
+  // ne doit jamais être publiée (elle serait ignorée ou bloquerait toute saisie).
+  if (s.validation_rule && !isSupportedValidationRule(s.validation_rule)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['validation_rule'],
+      message: 'règle non supportée — formats : min_length:N, max_length:N, min:N, max:N',
+    })
+  }
+  s.guardrails.forEach((g, i) => {
+    if (!isSupportedGuardrail(g, s.step_type)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['guardrails', i],
+        message: "garde-fou non supporté — seul { condition: \"choice == 'x'\", action: \"require_justification\", min_length?: N } sur une étape 'choice'",
+      })
+    }
+  })
+  if (s.step_type === 'choice' && !(s.choices && s.choices.length)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['choices'], message: "une étape 'choice' exige une liste de choix" })
+  }
 })
 
 const actionInput = z.object({

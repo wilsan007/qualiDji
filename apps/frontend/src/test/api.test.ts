@@ -13,7 +13,7 @@ vi.mock('@/lib/supabase', () => ({
   supabase: { auth: { getSession: mockGetSession } },
 }))
 
-import { auditsApi, reviewsApi, apiFetch } from '@/lib/api'
+import { auditsApi, reviewsApi, actionsApi, ncApi, evidenceApi, apiFetch } from '@/lib/api'
 
 describe('lib/api — audits internes (§9.2)', () => {
   beforeEach(() => {
@@ -139,5 +139,79 @@ describe('lib/api — revues de direction (§9.3)', () => {
       ),
     )
     await expect(reviewsApi.hold('r1')).rejects.toThrow(/entrées et décisions/)
+  })
+})
+
+describe('lib/api — moteur d\'exécution (C4) et CAPA (C6)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  const ok = () =>
+    vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    )
+
+  it('create / assign / approve / reject ciblent les routes d\'action avec le bon corps', async () => {
+    const fetchMock = ok()
+    vi.stubGlobal('fetch', fetchMock)
+    await actionsApi.create({ action_def_id: 'ACT_CTX_001', assigned_to: 'u1' })
+    await actionsApi.assign('a1', 'u2')
+    await actionsApi.approve('a1', 'conforme')
+    await actionsApi.reject('a1', 'à préciser')
+    const calls = fetchMock.mock.calls.map(([u, i]) => [String(u).replace(/^.*\/api\/v1/, ''), i!.method, i!.body])
+    expect(calls).toEqual([
+      ['/actions', 'POST', JSON.stringify({ action_def_id: 'ACT_CTX_001', assigned_to: 'u1' })],
+      ['/actions/a1/assign', 'POST', JSON.stringify({ assigned_to: 'u2' })],
+      ['/actions/a1/approve', 'POST', JSON.stringify({ comment: 'conforme' })],
+      ['/actions/a1/reject', 'POST', JSON.stringify({ comment: 'à préciser' })],
+    ])
+  })
+
+  it('l\'efficacité d\'une CAPA vise /nonconformities/capas/:id (la route n\'existe pas ailleurs)', async () => {
+    const fetchMock = ok()
+    vi.stubGlobal('fetch', fetchMock)
+    await ncApi.effectiveness('c1', { effective: true })
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/\/nonconformities\/capas\/c1\/effectiveness-check$/)
+  })
+
+  it('remonte le code et le message d\'une ségrégation des tâches refusée', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ error: 'ségrégation des tâches', code: 'ERR_SEGREGATION_OF_DUTIES' }), { status: 403, headers: { 'Content-Type': 'application/json' } }),
+    ))
+    await expect(actionsApi.approve('a1')).rejects.toThrow('ségrégation des tâches')
+  })
+})
+
+describe('lib/api — preuves (C3)', () => {
+  it('upload envoie le fichier lui-même (corps binaire), son type, son empreinte et le jeton', async () => {
+    vi.restoreAllMocks()
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ evidence: { id: 'e1' } }), { status: 201, headers: { 'Content-Type': 'application/json' } }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const file = new File(['%PDF-1.7 x'], 'relevé température.pdf', { type: 'application/pdf' })
+    await evidenceApi.upload('a1', 'S1', file, 'ab'.repeat(32))
+
+    const [url, init] = fetchMock.mock.calls[0]
+    const u = new URL(String(url))
+    expect(u.pathname).toMatch(/\/evidence\/upload$/)
+    expect(u.searchParams.get('action_id')).toBe('a1')
+    expect(u.searchParams.get('step_id')).toBe('S1')
+    expect(u.searchParams.get('filename')).toBe('relevé température.pdf')
+    expect(init!.method).toBe('POST')
+    expect(init!.body).toBe(file)
+    const h = init!.headers as Record<string, string>
+    expect(h['Content-Type']).toBe('application/pdf')
+    expect(h['X-Checksum-SHA256']).toBe('ab'.repeat(32))
+    expect(h.Authorization).toBe('Bearer tok-123')
+  })
+
+  it('upload remonte le refus du serveur', async () => {
+    vi.restoreAllMocks()
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ error: 'type non autorisé : text/html' }), { status: 415, headers: { 'Content-Type': 'application/json' } }),
+    ))
+    await expect(evidenceApi.upload('a1', undefined, new File(['<b>'], 'x.html', { type: 'text/html' }))).rejects.toThrow('type non autorisé')
   })
 })

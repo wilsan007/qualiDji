@@ -28,7 +28,7 @@ jobs:
         run: pnpm -r typecheck
 
       # Tests unitaires offline : matrice, RBAC (13), contrôles IA (30), rate
-      # limiter (7), file hors ligne (13). Les tests n'exigent ni DB ni secret :
+      # limiter (7), file hors ligne (13), validation des étapes (34), fichiers de preuve (19), proxy (9). Les tests n'exigent ni DB ni secret :
       # des valeurs factices contournent le fail-fast de lib/supabase au chargement.
       - name: Tests unitaires backend
         run: pnpm --filter @iso/backend test
@@ -40,7 +40,24 @@ jobs:
       - name: Build frontend
         run: pnpm --filter @iso/frontend build
 
-      # Tests frontend (vitest + jsdom + @testing-library) : 60 tests covering
+      # Artefact déployé = apps/backend/dist (tsc avec émission). On vérifie qu'il est
+      # produit ET qu'il démarre : `node dist/server.js` est la commande de production.
+      - name: Build backend (dist) et démarrage de l'artefact
+        run: |
+          pnpm --filter @iso/backend build
+          test -f apps/backend/dist/server.js
+          (cd apps/backend && PORT=4100 node dist/server.js > /tmp/backend-dist.log 2>&1 &)
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:4100/health > /dev/null; then echo "artefact prêt (${i}s)"; exit 0; fi
+            sleep 1
+          done
+          echo "::error::l'artefact dist/server.js n'a pas démarré"; cat /tmp/backend-dist.log; exit 1
+        env:
+          SUPABASE_URL: http://localhost:54321
+          SUPABASE_ANON_KEY: ci-dummy-anon-key
+          SUPABASE_SERVICE_ROLE_KEY: ci-dummy-service-role-key
+
+      # Tests frontend (vitest + jsdom + @testing-library) : 77 tests covering
       # le gating par permissions, la file hors ligne, la couche API, les
       # composants Audits / Revues / Layout. Aucun réseau requis.
       - name: Tests unitaires frontend
@@ -88,10 +105,11 @@ jobs:
         env:
           E2E_PASSWORD: Qualidji!RBAC2026
 
-      # ── Backend + suite E2E (103 checks) ────────────────────────────────
+      # ── Backend + suite E2E (233 checks) ────────────────────────────────
       - name: Démarrage du backend
         run: |
-          (cd apps/backend && npx tsx src/server.ts > /tmp/backend.log 2>&1 &)
+          # L'E2E teste l'artefact tel qu'il sera déployé (dist), pas le mode dev tsx.
+          (cd apps/backend && pnpm build && node dist/server.js > /tmp/backend.log 2>&1 &)
           for i in $(seq 1 30); do
             if curl -sf http://localhost:4000/health > /dev/null; then
               echo "backend prêt (${i}s)"; exit 0
@@ -106,6 +124,8 @@ jobs:
           CORS_ORIGIN: http://localhost:5174
           # Marge large : la suite E2E enchaîne ~100 appels depuis la même IP.
           RATE_LIMIT_API: 2000
+          # Taille max d'une preuve : 1 Mio en CI pour tester le refus 413 sans gros fichier.
+          EVIDENCE_MAX_BYTES: 1048576
 
       - name: Suite E2E (RBAC, modules B/G/H, IA, documents, audits)
         run: |
@@ -114,6 +134,7 @@ jobs:
           AUTH_URL="$(grep '^API_URL=' /tmp/sb_env.txt | cut -d= -f2- | tr -d '"')/auth/v1" \
           ANON_KEY="$SUPABASE_ANON_KEY" \
           RBAC_PASSWORD=Qualidji!RBAC2026 \
+          EVIDENCE_MAX_BYTES=1048576 \
           bash scripts/e2e_rbac.sh
 
       # ── Smoke test frontend (Playwright, Chromium) ──────────────────────

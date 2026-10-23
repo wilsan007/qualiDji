@@ -57,7 +57,10 @@ Secrets nécessaires :
 | `SUPABASE_SERVICE_ROLE_KEY` | provision E2E, RLS, seeds |
 | `SUPABASE_URL` / `SUPABASE_ANON_KEY` | accès REST à la base |
 | `CORS_ORIGIN` | origines autorisées (CSV) |
-| `RATE_LIMIT_API` / `RATE_LIMIT_WINDOW_MS` | protection de l'API |
+| `RATE_LIMIT_API` / `RATE_LIMIT_WINDOW_MS` | protection de l'API (s'applique à tout `/api/v1`, `/me` compris) |
+| `TRUST_PROXY` | nombre de reverse proxys devant le backend (`1`, `2`…), `loopback`/`uniquelocal` ou liste d'IP/CIDR ; vide = aucun proxy ; `true` refusé |
+| `EVIDENCE_MAX_BYTES` | taille max d'une preuve en octets (défaut 25 Mio, aligné sur le bucket `evidence`) ; le fichier est tenu en mémoire pendant le dépôt |
+| `EVIDENCE_URL_TTL_S` | durée des URL signées de téléchargement (défaut 300 s, plafonnée à 3600) |
 
 Les secrets de développement sont **jamais commités** (`.env`/.env.local dans
 `.gitignore`). Le `.env.example` montre la forme des valeurs.
@@ -94,28 +97,37 @@ pnpm dev
 
 ## 5. Déploiement backend (node dist/server.js)
 
-Le backend est une API Express : seule l'artifact `dist/server.js` (build
-`tsc --noEmit`) est déployé, derrière un process manager et un reverse proxy.
+Le backend est une API Express compilée : `pnpm build` (`rm -rf dist && tsc`)
+produit `apps/backend/dist/`, et **seul `dist/server.js` est lancé en production**,
+derrière un process manager et un reverse proxy. (`pnpm typecheck` reste le
+contrôle sans émission.) La CI construit l'artefact, vérifie qu'il démarre et
+exécute toute la suite E2E contre lui.
 
 ```bash
 cd apps/backend
-pnpm build            # tsc --noEmit → dist/
+pnpm install --frozen-lockfile
+pnpm build            # tsc → dist/server.js
 NODE_ENV=production
 # systemd (exemple) :
 #   ExecStart=/usr/bin/node dist/server.js
+#   WorkingDirectory=/opt/qualidji/apps/backend
 #   Environment="PORT=4000" "CORS_ORIGIN=https://app.qualidji.fr"
+#   Environment="TRUST_PROXY=1"            # nombre de reverse proxys devant le backend
 #   Environment="RATE_LIMIT_API=2000" "RATE_LIMIT_WINDOW_MS=600000"
 #   Environment="SUPABASE_URL=https://<projet>.supabase.co"
 #   Environment="SUPABASE_ANON_KEY=<anonne>"
 #   Environment="SUPABASE_SERVICE_ROLE_KEY=<service_role>"
-#   Environment="DATABASE_URL=postgresql://..."  # Si le service lit ce var
 ```
 
 - **Port** : `PORT` (défaut 4000).
-- **Health** : `GET /health` → 200 (utilisé par les supervisers et les smoke
-  tests).
-- **Logs** : stdout/stderr formaté JSON (structuré) — conserver dans le
-  journal système (journalctl).
+- **Reverse proxy** : définir `TRUST_PROXY` (voir §3). Sans lui, `req.ip` est
+  l'adresse du proxy et **tous les utilisateurs partagent le même quota** de
+  limitation de débit ; avec une valeur trop large, un client peut usurper son
+  IP via `X-Forwarded-For`. `TRUST_PROXY=true` est refusé au démarrage.
+- **Health** : `GET /health` → 200 (hors limitation de débit ; utilisé par les
+  supervisors et les smoke tests).
+- **Logs** : texte brut sur stdout/stderr (pas de JSON structuré) — à collecter
+  via le journal système (journalctl) ou l'agent de logs de la plateforme.
 
 ---
 
@@ -200,8 +212,14 @@ La sauvegarde de référence reste le dépôt git des migrations + l'archive
 | Supprimer les comptes de recette | `pnpm --filter @iso/backend cleanup:e2e` |
 | Archiver | `./scripts/db_backup.sh` |
 | Restaurer | `./scripts/db_restore.sh <archive>` |
+| Gérer les audits internes | `pnpm --filter @iso/backend audit:list` / `audit:create` / `audit:respond` / `audit:verify` |
+| Tenue de revue de direction | `pnpm --filter @iso/backend review:list` / `review:create` / `review:prefill` / `review:hold` |
 | Linter/typecheck | `pnpm -r lint && pnpm -r typecheck` |
 | Tests | `pnpm --filter @iso/backend test` / `pnpm --filter @iso/frontend test` |
+
+> **Audit interne (§9.2)** — Programme d'audits, constat (finding) avec réponse et vérification d'efficacité par personne distincte (§F.4). Flux : planifié → en cours → répondu → vérifié efficace ou réouvert.
+>
+> **Revue de direction (§9.3)** — Tenue conditionnelle exigeant entrées consolidées (depuis les données enregistrées §5.8) ET décisions. Statuts : brouillon → tenue → close. La tenue ne peut être effectuée que quand les deux conditions sont remplies.
 
 ---
 

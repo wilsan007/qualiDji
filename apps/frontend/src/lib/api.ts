@@ -34,6 +34,17 @@ export const actionsApi = {
   start: (id: string) => apiFetch(`/actions/${id}/start`, { method: 'POST' }),
   submit: (id: string) => apiFetch(`/actions/${id}/submit`, { method: 'POST' }),
   block: (id: string) => apiFetch(`/actions/${id}/block`, { method: 'POST' }),
+  /** Création + assignation d'une action à partir d'une définition publiée (action.assign). */
+  create: (body: { action_def_id: string; assigned_to: string; due_at?: string | null }) =>
+    apiFetch('/actions', { method: 'POST', body: JSON.stringify(body) }),
+  assign: (id: string, assigned_to: string) =>
+    apiFetch(`/actions/${id}/assign`, { method: 'POST', body: JSON.stringify({ assigned_to }) }),
+  /** Approbation (action.approve) — refusée si l'approbateur a exécuté l'action (ségrégation des tâches). */
+  approve: (id: string, comment?: string) =>
+    apiFetch(`/actions/${id}/approve`, { method: 'POST', body: JSON.stringify({ comment }) }),
+  /** Rejet : retour à l'exécutant, motif obligatoire. */
+  reject: (id: string, comment: string) =>
+    apiFetch(`/actions/${id}/reject`, { method: 'POST', body: JSON.stringify({ comment }) }),
   exception: (id: string, body: { reason: string; severity?: string }) =>
     apiFetch(`/actions/${id}/exception`, { method: 'POST', body: JSON.stringify(body) }),
 }
@@ -54,11 +65,6 @@ export const stepsApi = {
       body: JSON.stringify({ value }),
     })
   },
-  addEvidence: (actionId: string, stepId: string, body: { kind: string; storage_path: string; checksum?: string; value?: any }) =>
-    apiFetch(`/steps/${actionId}/steps/${stepId}/evidence`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
 }
 
 // AI
@@ -70,10 +76,41 @@ export const aiApi = {
     }),
 }
 
-// Evidence
+// Evidence — le fichier est réellement envoyé au backend (stockage privé) ; l'empreinte SHA-256
+// annoncée est recalculée et comparée par le serveur.
+export interface EvidenceItem {
+  id: string
+  action_id: string | null
+  step_id: string | null
+  kind: 'file' | 'photo' | 'measure' | 'text' | 'system'
+  checksum: string | null
+  value: { filename?: string; size?: number; mime?: string } | null
+  captured_by: string | null
+  captured_at: string
+}
+
 export const evidenceApi = {
-  create: (body: { action_id: string; kind: string; storage_path: string; checksum?: string; value?: any }) =>
-    apiFetch('/evidence', { method: 'POST', body: JSON.stringify(body) }),
+  list: (actionId: string): Promise<{ evidence: EvidenceItem[] }> =>
+    apiFetch(`/evidence?action_id=${encodeURIComponent(actionId)}`),
+  upload: async (actionId: string, stepId: string | undefined, file: File, checksum?: string) => {
+    const token = await getToken()
+    const qs = new URLSearchParams({ action_id: actionId, filename: file.name })
+    if (stepId) qs.set('step_id', stepId)
+    const headers: Record<string, string> = { 'Content-Type': file.type || 'application/octet-stream' }
+    if (token) headers.Authorization = `Bearer ${token}`
+    if (checksum) headers['X-Checksum-SHA256'] = checksum
+    const res = await fetch(`${API_BASE}/evidence/upload?${qs.toString()}`, { method: 'POST', headers, body: file })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error(body.error ?? `API error ${res.status}`)
+    }
+    return res.json() as Promise<{ evidence: EvidenceItem }>
+  },
+  /** URL signée de courte durée (le fichier ne se lit jamais directement dans le stockage). */
+  download: (id: string): Promise<{ url: string; expires_in: number; filename: string; checksum: string | null }> =>
+    apiFetch(`/evidence/${id}/download`),
+  verify: (id: string): Promise<{ intact: boolean; reason: string | null; expected: string | null; actual: string | null }> =>
+    apiFetch(`/evidence/${id}/verify`),
   get: (id: string) => apiFetch(`/evidence/${id}`),
   remove: (id: string) => apiFetch(`/evidence/${id}`, { method: 'DELETE' }),
 }
@@ -86,7 +123,7 @@ export const ncApi = {
   capa: (id: string, body: { root_cause?: string; corrective_action?: string; responsible?: string; due_date?: string }) =>
     apiFetch(`/nonconformities/${id}/capa`, { method: 'POST', body: JSON.stringify(body) }),
   effectiveness: (id: string, body: { effective: boolean; comments?: string }) =>
-    apiFetch(`/capas/${id}/effectiveness-check`, { method: 'POST', body: JSON.stringify(body) }),
+    apiFetch(`/nonconformities/capas/${id}/effectiveness-check`, { method: 'POST', body: JSON.stringify(body) }),
 }
 
 // Dashboard

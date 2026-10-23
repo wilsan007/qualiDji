@@ -25,9 +25,14 @@ import { reviewsRouter } from './routes/reviews'
 import { requireAuth, AuthedRequest } from './middleware/auth'
 import { supabaseAdmin } from './lib/supabase'
 import { rateLimit } from './lib/rateLimiter'
+import { parseTrustProxy } from './lib/trustProxy'
 
 const app: express.Application = express()
 const PORT = Number(process.env.PORT ?? 4000)
+
+// Derrière un reverse proxy : TRUST_PROXY=<nombre de proxys> pour que req.ip (et donc la
+// limitation de débit par IP) soit l'adresse du client et non celle du proxy.
+app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY))
 
 /**
  * Origines CORS autorisées (V5 §15).
@@ -61,6 +66,14 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', service: 'iso-backend', time: new Date().toISOString() })
 })
 
+// API v1 — limitation de débit (§15) : fenêtre fixe par IP, generous enough
+// pour le dev et l'E2E ; 429 + Retry-After au-delà. S'applique à TOUT /api/v1, y compris
+// /me (2-3 appels Supabase par requête, donc le plus coûteux à laisser ouvert).
+// RATE_LIMIT_API permet d'ajuster la fenêtre sans redéploiement.
+const API_RATE_LIMIT = Number(process.env.RATE_LIMIT_API ?? 600)
+const API_RATE_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 10 * 60 * 1000)
+app.use('/api/v1', rateLimit({ limit: API_RATE_LIMIT, windowMs: API_RATE_WINDOW_MS }))
+
 // Session courante + permissions RBAC (V5 §3.3) — alimente le gating frontend
 // (usePermissions) sans jamais faire confiance au rôle déclaré côté client.
 app.get('/api/v1/me', requireAuth, async (req, res) => {
@@ -80,12 +93,6 @@ app.get('/api/v1/me', requireAuth, async (req, res) => {
   res.json({ user: r.user, permissions })
 })
 
-// API v1 — limitation de débit (§15) : fenêtre fixe par IP, generous enough
-// pour le dev et l'E2E (~80 requêtes/run) ; 429 + Retry-After au-delà.
-// RATE_LIMIT_API permet d'ajuster la fenêtre sans redéploiement.
-const API_RATE_LIMIT = Number(process.env.RATE_LIMIT_API ?? 600)
-const API_RATE_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 10 * 60 * 1000)
-app.use('/api/v1', rateLimit({ limit: API_RATE_LIMIT, windowMs: API_RATE_WINDOW_MS }))
 app.use('/api/v1/tenants', tenantsRouter)
 app.use('/api/v1/auth', (req, res) => {
   res.status(404).json({ error: 'auth routes handled by Supabase client' })

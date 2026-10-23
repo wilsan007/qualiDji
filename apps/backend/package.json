@@ -5,17 +5,20 @@
   "description": "Backend Express — Module ISO 9001 IA Assistant Terrain",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc --noEmit",
+    "build": "rm -rf dist && tsc",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx scripts/test_matrix_logic.ts && tsx scripts/test_rbac_permissions.ts && tsx scripts/test_ai_controls.ts && tsx scripts/test_rate_limiter.ts && tsx scripts/test_offline_queue.ts",
+    "test": "tsx scripts/test_matrix_logic.ts && tsx scripts/test_rbac_permissions.ts && tsx scripts/test_ai_controls.ts && tsx scripts/test_rate_limiter.ts && tsx scripts/test_offline_queue.ts && tsx scripts/test_step_validation.ts && tsx scripts/test_evidence_files.ts && tsx scripts/test_trust_proxy.ts",
     "test:rbac": "tsx scripts/test_rbac_permissions.ts",
     "test:ai": "tsx scripts/test_ai_controls.ts",
     "test:hardening": "tsx scripts/test_rate_limiter.ts",
     "test:offline": "tsx scripts/test_offline_queue.ts",
     "test:e2e": "bash scripts/e2e_rbac.sh",
     "provision:e2e": "tsx scripts/provision_e2e.ts",
-    "cleanup:e2e": "tsx scripts/cleanup_e2e_accounts.ts"
+    "cleanup:e2e": "tsx scripts/cleanup_e2e_accounts.ts",
+    "test:steps": "tsx scripts/test_step_validation.ts",
+    "test:evidence": "tsx scripts/test_evidence_files.ts",
+    "test:deploy": "tsx scripts/test_trust_proxy.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.46.1",

@@ -3,18 +3,37 @@ import type { Router as ExpressRouter } from 'express'
 import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '../middleware/auth'
 import { supabaseAdmin } from '../lib/supabase'
 import { notifyByRoles } from '../lib/notify'
+import { z } from 'zod'
 
 const router: ExpressRouter = Router()
+
+const capaInput = z.object({
+  root_cause: z.string().max(4000).optional(),
+  corrective_action: z.string().max(4000).optional(),
+  responsible: z.string().max(200).optional(),
+  // Date calendaire (champ <input type="date"> de l'interface) : AAAA-MM-JJ
+  due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'due_date attendu : AAAA-MM-JJ').optional(),
+})
+
+const effectivenessInput = z.object({
+  effective: z.boolean(),
+  comments: z.string().max(4000).optional(),
+})
 
 // Liste NC du tenant — lecture ouverte à tout rôle porteur d'action.read (registre qualité partagé §4.1)
 router.get('/', requireAuth, requireTenant, requirePermission('action.read'), async (req: AuthedRequest, res) => {
   const { data, error } = await supabaseAdmin
     .from('nonconformities')
-    .select('*')
+    .select('*, capas(*)')
     .eq('tenant_id', req.user!.tenant_id)
     .order('created_at', { ascending: false })
   if (error) return res.status(400).json({ error: error.message })
-  res.json({ nonconformities: data ?? [] })
+  // L'interface attend `nc.capa` : le plan CAPA le plus récent de la NC.
+  const nonconformities = (data ?? []).map(({ capas, ...nc }) => {
+    const sorted = [...(capas ?? [])].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+    return { ...nc, capa: sorted[0] ?? null }
+  })
+  res.json({ nonconformities })
 })
 
 // Créer une NC — acte de décision réservé au management qualité (action.approve).
@@ -55,12 +74,9 @@ router.post('/', requireAuth, requireTenant, requirePermission('action.approve')
 // Lier une CAPA à une NC — gestion CAPA réservée à l'autorité qualité (capa.close)
 router.post('/:id/capa', requireAuth, requireTenant, requirePermission('capa.close'), async (req: AuthedRequest, res) => {
   const { id } = req.params
-  const { root_cause, corrective_action, responsible, due_date } = req.body as {
-    root_cause?: string
-    corrective_action?: string
-    responsible?: string
-    due_date?: string
-  }
+  const parsed = capaInput.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json({ error: 'invalid capa payload', details: parsed.error.flatten() })
+  const { root_cause, corrective_action, responsible, due_date } = parsed.data
 
   // Isolation tenant : la NC parente doit appartenir au tenant de l'utilisateur
   const { data: nc } = await supabaseAdmin
@@ -89,7 +105,9 @@ router.post('/:id/capa', requireAuth, requireTenant, requirePermission('capa.clo
 // Check d'efficacité d'une CAPA — vérification de clôture réservée à l'autorité qualité (capa.close)
 router.post('/capas/:id/effectiveness-check', requireAuth, requireTenant, requirePermission('capa.close'), async (req: AuthedRequest, res) => {
   const { id } = req.params
-  const { effective, comments } = req.body as { effective?: boolean; comments?: string }
+  const parsed = effectivenessInput.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json({ error: 'invalid payload (effective: boolean requis)', details: parsed.error.flatten() })
+  const { effective, comments } = parsed.data
 
   const { data, error } = await supabaseAdmin
     .from('capas')

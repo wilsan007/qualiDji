@@ -20,7 +20,7 @@ clause par clause. Ne jamais coder l'IA avant un workflow métier stable et test
   Zustand / React Query, React Hook Form + Zod, PWA + IndexedDB (dexie.js)
 - **backend** : Node.js 20+, TypeScript, Express, Zod, Supabase Auth
 - **database** : PostgreSQL 15+ hébergé sur Supabase — RLS obligatoire
-- **storage** : Supabase Storage, buckets privés uniquement, signed URLs max 1h
+- **storage** : Supabase Storage, bucket privé `evidence` (migration 0017), dépôt via le backend (empreinte SHA-256 vérifiée), signed URLs max 1h
 - **ai** : interface `AIProvider` (OpenAI, Anthropic, ou local Ollama),
   fallback templates statiques si provider down
 
@@ -47,13 +47,13 @@ pnpm dev
 ## Tests
 
 ```bash
-# Tests unitaires backend (offline : matrice, RBAC, IA, rate limiter, file hors ligne)
+# Tests unitaires backend (offline : matrice, RBAC, IA, rate limiter, file hors ligne, validation des étapes, fichiers de preuve, proxy)
 pnpm --filter @iso/backend test
 
-# Tests unitaires frontend (vitest + jsdom + @testing-library) — 60 tests
+# Tests unitaires frontend (vitest + jsdom + @testing-library) — 77 tests
 pnpm --filter @iso/frontend test
 
-# E2E backend (103 checks) : nécessite une pile Supabase locale et les comptes de test
+# E2E backend (233 checks, dont le parcours complet WF_CONTEXT_ANALYSIS) : nécessite une pile Supabase locale et les comptes de test
 npx supabase start
 npx supabase db reset
 pnpm --filter @iso/backend provision:e2e     # crée le tenant + les 4 comptes de test

@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { stepsApi } from '@/lib/api'
 import type { WorkflowStep } from '@/types'
 import { Button } from '@/components/ui/Button'
 
@@ -37,6 +36,28 @@ function ruleLabel(rule?: string): string | null {
   return rule
 }
 
+/**
+ * Garde-fou « require_justification » (même grammaire que le serveur) : renvoie la longueur
+ * minimale de justification exigée pour ce choix, ou null si aucune. Le serveur reste l'autorité.
+ */
+export function justificationRequired(step: WorkflowStep, choice: string | null): number | null {
+  if (!choice) return null
+  for (const g of step.guardrails ?? []) {
+    if (g?.action !== 'require_justification' || typeof g.condition !== 'string') continue
+    const m = /^\s*choice\s*(==|!=)\s*'([^']*)'\s*$/.exec(g.condition)
+    if (!m) continue
+    const hit = m[1] === '==' ? choice === m[2] : choice !== m[2]
+    if (hit) return typeof g.min_length === 'number' ? g.min_length : 1
+  }
+  return null
+}
+
+/** Valeur d'une étape à choix : « choix » ou { choice, justification } quand un garde-fou l'exige. */
+function splitChoice(v: any): { choice: string | null; justification: string } {
+  if (v && typeof v === 'object') return { choice: v.choice ?? null, justification: v.justification ?? '' }
+  return { choice: typeof v === 'string' ? v : null, justification: '' }
+}
+
 export function WorkflowStep({ step, value, onChange, onSubmit, submitting }: WorkflowStepProps) {
   const [localValue, setLocalValue] = useState<any>(value ?? null)
 
@@ -45,12 +66,25 @@ export function WorkflowStep({ step, value, onChange, onSubmit, submitting }: Wo
     onChange(v)
   }
 
+  const { choice, justification } = splitChoice(localValue)
+  const needJustification = step.step_type === 'choice' ? justificationRequired(step, choice) : null
+
+  const pickChoice = (c: string) => {
+    handleChange(justificationRequired(step, c) !== null ? { choice: c, justification } : c)
+  }
+  const editJustification = (j: string) => handleChange({ choice, justification: j })
+
   const isValid = () => {
+    if (step.step_type === 'choice') {
+      if (!choice) return !step.required
+      if (needJustification !== null) return justification.trim().length >= needJustification
+      return true
+    }
     if (!step.required) return true
     if (localValue == null || localValue === '') return false
     if (step.validation_rule?.startsWith('min_length:')) {
       const n = Number(step.validation_rule.split(':')[1])
-      return String(localValue).length >= n
+      return String(localValue).trim().length >= n
     }
     return true
   }
@@ -90,7 +124,7 @@ export function WorkflowStep({ step, value, onChange, onSubmit, submitting }: Wo
       {step.step_type === 'choice' && step.choices && (
         <div className="mt-3 grid gap-2">
           {step.choices.map((c) => {
-            const active = localValue === c
+            const active = choice === c
             return (
               <label
                 key={c}
@@ -104,7 +138,7 @@ export function WorkflowStep({ step, value, onChange, onSubmit, submitting }: Wo
                   type="radio"
                   name={`step-${step.id}`}
                   checked={active}
-                  onChange={() => handleChange(c)}
+                  onChange={() => pickChoice(c)}
                   className="h-4 w-4 text-blue-600 focus:ring-blue-500"
                 />
                 <span className="text-sm text-slate-700">{c}</span>
@@ -114,15 +148,27 @@ export function WorkflowStep({ step, value, onChange, onSubmit, submitting }: Wo
         </div>
       )}
 
-      {step.step_type === 'approval' && (
-        <div className="mt-4 flex flex-wrap gap-2">
-          <Button onClick={onSubmit} disabled={submitting} loading={submitting}>
-            Valider l'étape
-          </Button>
-          <Button variant="outline" onClick={() => handleChange('rejected')} disabled={submitting}>
-            Rejeter
-          </Button>
+      {step.step_type === 'choice' && needJustification !== null && (
+        <div className="mt-3">
+          <label className="label" htmlFor={`just-${step.id}`}>
+            Justification obligatoire (au moins {needJustification} caractères)
+          </label>
+          <textarea
+            id={`just-${step.id}`}
+            className="input min-h-[90px]"
+            value={justification}
+            onChange={(e) => editJustification(e.target.value)}
+            placeholder="Expliquez pourquoi ce choix est retenu…"
+          />
+          <p className="text-xs text-slate-400 mt-1">{justification.trim().length} / {needJustification}</p>
         </div>
+      )}
+
+      {step.step_type === 'approval' && (
+        <p className="mt-3 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-3">
+          Étape tranchée par {step.approver_role ?? 'l\'approbateur'} après la soumission de l'action
+          {step.segregation_of_duties ? ' (personne distincte de l\'exécutant)' : ''}. Elle ne se saisit pas.
+        </p>
       )}
 
       {(step.step_type === 'text_input' || step.step_type === 'choice') && (

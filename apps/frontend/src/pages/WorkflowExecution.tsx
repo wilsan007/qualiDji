@@ -5,10 +5,11 @@ import { WorkflowStep } from '@/components/WorkflowStep'
 import { AIGuidancePanel } from '@/components/AIGuidancePanel'
 import { EvidenceUploader } from '@/components/EvidenceUploader'
 import { Button } from '@/components/ui/Button'
+import { usePermissions } from '@/hooks/usePermissions'
 import { PageLoader, ErrorState } from '@/components/ui/States'
 import { statusBadge, statusLabel, formatDate, formatDateTime, errorMessage } from '@/lib/format'
 import type { Action, WorkflowStep as WStep } from '@/types'
-import { ArrowLeft, Sparkles, ShieldAlert, FileText, User2, Info } from 'lucide-react'
+import { ArrowLeft, Sparkles, ShieldAlert, FileText, User2, Info, CheckCircle2, RotateCcw } from 'lucide-react'
 
 /** Modale de déclaration d'exception → crée une non-conformité et bloque l'action. */
 function ExceptionModal({ open, onClose, onConfirm, saving }: {
@@ -90,6 +91,11 @@ export default function WorkflowExecution() {
   const [openStep, setOpenStep] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [exceptionOpen, setExceptionOpen] = useState(false)
+  const [reviewComment, setReviewComment] = useState('')
+  // Approbation = action.approve (V5 §3.3) — gating UI ; le serveur reste la source de vérité
+  // (rôle d'approbateur de la définition + ségrégation des tâches).
+  const { has } = usePermissions()
+  const canReview = has('action.approve')
 
   useEffect(() => {
     if (!actionId) {
@@ -100,6 +106,8 @@ export default function WorkflowExecution() {
       .get(actionId)
       .then((r: any) => {
         setAction(r.action)
+        // Saisies déjà enregistrées (reprise après rejet ou rechargement)
+        setValues(Object.fromEntries((r.action?.step_submissions ?? []).map((sub: any) => [sub.step_id, sub.value])))
         const wa = r.action?.workflow_actions
         const ws = (wa?.workflow_steps ?? []).sort(
           (a: WStep, b: WStep) => (a.sequence ?? 0) - (b.sequence ?? 0)
@@ -138,6 +146,21 @@ export default function WorkflowExecution() {
     setError('')
     try {
       await actionsApi.submit(actionId!)
+      await refresh()
+    } catch (e) {
+      setError(errorMessage(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleReview = async (decision: 'approve' | 'reject') => {
+    setSaving(true)
+    setError('')
+    try {
+      if (decision === 'approve') await actionsApi.approve(actionId!, reviewComment.trim() || undefined)
+      else await actionsApi.reject(actionId!, reviewComment.trim())
+      setReviewComment('')
       await refresh()
     } catch (e) {
       setError(errorMessage(e))
@@ -231,6 +254,55 @@ export default function WorkflowExecution() {
           </div>
         )}
       </div>
+
+      {action.status === 'in_progress' && action.review_comment && (
+        <div className="flex items-start gap-3 p-3 rounded-lg bg-amber-50 border border-amber-200">
+          <RotateCcw className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <p className="text-sm text-amber-900">
+            <span className="font-semibold">Action rejetée — à corriger :</span> {action.review_comment}
+          </p>
+        </div>
+      )}
+
+      {action.status === 'approved' && (
+        <div className="flex items-start gap-3 p-3 rounded-lg bg-emerald-50 border border-emerald-200">
+          <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+          <p className="text-sm text-emerald-900">
+            Action approuvée{action.reviewed_at ? ` le ${formatDateTime(action.reviewed_at)}` : ''}
+            {action.review_comment ? ` — ${action.review_comment}` : ''}.
+          </p>
+        </div>
+      )}
+
+      {action.status === 'submitted' && canReview && (
+        <div className="card p-5 border-blue-200">
+          <h2 className="text-sm font-semibold text-slate-900 mb-1">Validation de l'action</h2>
+          <p className="text-xs text-slate-500 mb-3">
+            L'approbateur doit être une personne distincte de l'exécutant (ségrégation des tâches, contrôlée par le serveur).
+            Le rejet exige un motif et renvoie l'action à l'exécutant.
+          </p>
+          <label className="label" htmlFor="review-comment">Commentaire</label>
+          <textarea
+            id="review-comment"
+            className="input min-h-[72px]"
+            value={reviewComment}
+            onChange={(e) => setReviewComment(e.target.value)}
+            placeholder="Commentaire (obligatoire pour un rejet)"
+          />
+          <div className="flex flex-wrap gap-2 mt-3">
+            <Button onClick={() => handleReview('approve')} disabled={saving} loading={saving}>
+              Approuver
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => handleReview('reject')}
+              disabled={saving || reviewComment.trim().length < 3}
+            >
+              Rejeter
+            </Button>
+          </div>
+        </div>
+      )}
 
       {error && <ErrorState message={error} />}
 
