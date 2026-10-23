@@ -17,6 +17,19 @@ import { isSupportedGuardrail, isSupportedValidationRule } from '../lib/stepVali
  */
 const router: ExpressRouter = Router()
 
+/**
+ * Isolation (C5) : la bibliothèque comporte des workflows GLOBAUX (tenant_id null, seed,
+ * lecture seule pour les tenants) et des workflows PROPRES au tenant. Un tenant ne voit
+ * jamais — et ne modifie jamais — les workflows d'un autre tenant.
+ */
+const tenantPrefix = (tenantId: string) => tenantId.replace(/-/g, '').slice(0, 8)
+/** Code interne d'un workflow du tenant : unique par tenant, sans collision entre tenants. */
+const ownId = (base: string, tenantId: string) => `${base}__${tenantPrefix(tenantId)}`
+/** Retire le suffixe tenant et la version d'un identifiant pour en retrouver la racine. */
+const baseCode = (id: string) => id.replace(/__[0-9a-f]{8}$/, '').replace(/_V\d+$/, '')
+/** Filtre PostgREST : globaux + propres au tenant. */
+const scope = (tenantId: string) => `tenant_id.is.null,tenant_id.eq.${tenantId}`
+
 const STEP_TYPES = [
   'instruction', 'text_input', 'number_input', 'choice', 'checkbox', 'date',
   'signature', 'photo', 'file_upload', 'barcode', 'qr_scan', 'sensor_value',
@@ -108,12 +121,18 @@ async function loadWorkflow(id: string, req: AuthedRequest, res: any) {
     .from('workflow_definitions')
     .select('*')
     .eq('id', id)
-    .single()
+    .or(scope(req.user!.tenant_id!))
+    .maybeSingle()
   if (error || !wf) {
     res.status(404).json({ error: 'workflow not found' })
     return null
   }
-  if (wf.status !== 'published' && !canSeeDrafts(req)) {
+  // Un global non publié n'est visible d'aucun tenant ; un brouillon propre exige workflow.approve.
+  if (wf.status !== 'published' && (wf.tenant_id === null || !canSeeDrafts(req))) {
+    if (wf.tenant_id === null) {
+      res.status(404).json({ error: 'workflow not found' })
+      return null
+    }
     res.status(403).json({ error: 'missing permission: workflow.approve', code: 'ERR_PERMISSION_DENIED' })
     return null
   }
@@ -140,6 +159,28 @@ async function loadWorkflow(id: string, req: AuthedRequest, res: any) {
   }
 }
 
+/** Workflow MODIFIABLE : propre au tenant. Global → 403 (lecture seule) ; autre tenant / inconnu → 404. */
+async function loadOwnWorkflow(id: string, req: AuthedRequest, res: any) {
+  const { data: wf } = await supabaseAdmin
+    .from('workflow_definitions')
+    .select('*')
+    .eq('id', id)
+    .or(scope(req.user!.tenant_id!))
+    .maybeSingle()
+  if (!wf || (wf.tenant_id === null && wf.status !== 'published')) {
+    res.status(404).json({ error: 'workflow not found' })
+    return null
+  }
+  if (wf.tenant_id === null) {
+    res.status(403).json({
+      error: 'bibliothèque globale en lecture seule — dupliquez le workflow dans votre tenant (POST /workflows/:id/duplicate)',
+      code: 'ERR_WORKFLOW_GLOBAL_READONLY',
+    })
+    return null
+  }
+  return wf
+}
+
 // ── Liste de la bibliothèque ────────────────────────────────────────────────
 // workflow.read suffit pour la bibliothèque publiée ; brouillons/obsolètes
 // exigent workflow.approve (?include_all=1).
@@ -148,11 +189,15 @@ router.get('/', requireAuth, requireTenant, requirePermission('workflow.read'), 
   if (includeAll && !canSeeDrafts(req)) {
     return res.status(403).json({ error: 'missing permission: workflow.approve', code: 'ERR_PERMISSION_DENIED' })
   }
+  const tid = req.user!.tenant_id!
   let query = supabaseAdmin
     .from('workflow_definitions')
     .select('*')
     .order('name')
-  if (!includeAll) query = query.eq('status', 'published')
+  // Globaux publiés + workflows du tenant (published par défaut, tous statuts avec include_all)
+  query = includeAll
+    ? query.or(`and(tenant_id.is.null,status.eq.published),tenant_id.eq.${tid}`)
+    : query.eq('status', 'published').or(scope(tid))
   const { data, error } = await query
   if (error) return res.status(500).json({ error: error.message })
   res.json({ workflows: data ?? [] })
@@ -210,17 +255,19 @@ router.post('/', requireAuth, requireTenant, requirePermission('workflow.create'
     return res.status(400).json({ error: 'invalid workflow payload', details: parsed.error.flatten() })
   }
   const input = parsed.data
-  const code = input.code ?? `WF_${randomBytes(4).toString('hex').toUpperCase()}`
+  const tenantId = req.user!.tenant_id!
+  const code = ownId(input.code ?? `WF_${randomBytes(4).toString('hex').toUpperCase()}`, tenantId)
 
   const { data: existing } = await supabaseAdmin
     .from('workflow_definitions')
     .select('id')
     .eq('id', code)
-    .single()
+    .maybeSingle()
   if (existing) return res.status(409).json({ error: `workflow code already exists: ${code}` })
 
   const { error: wfErr } = await supabaseAdmin.from('workflow_definitions').insert({
     id: code,
+    tenant_id: tenantId,
     name: input.name,
     standard_clause: input.standard_clause,
     version: 1,
@@ -251,12 +298,8 @@ router.put('/:id', requireAuth, requireTenant, requirePermission('workflow.edit_
     return res.status(400).json({ error: 'invalid workflow payload', details: parsed.error.flatten() })
   }
   const input = parsed.data
-  const { data: wf, error: wfErr } = await supabaseAdmin
-    .from('workflow_definitions')
-    .select('*')
-    .eq('id', req.params.id)
-    .single()
-  if (wfErr || !wf) return res.status(404).json({ error: 'workflow not found' })
+  const wf = await loadOwnWorkflow(req.params.id, req, res)
+  if (!wf) return
   if (wf.status !== 'draft') {
     return res.status(409).json({ error: "workflow is not editable — dupliquez-le pour créer une nouvelle version (V5 §5.2)" })
   }
@@ -291,8 +334,8 @@ router.put('/:id', requireAuth, requireTenant, requirePermission('workflow.edit_
 
 // ── Soumission en revue : draft → in_review ─────────────────────────────────
 router.post('/:id/submit', requireAuth, requireTenant, requirePermission('workflow.edit_draft'), async (req: AuthedRequest, res) => {
-  const { data: wf } = await supabaseAdmin.from('workflow_definitions').select('*').eq('id', req.params.id).single()
-  if (!wf) return res.status(404).json({ error: 'workflow not found' })
+  const wf = await loadOwnWorkflow(req.params.id, req, res)
+  if (!wf) return
   if (wf.status !== 'draft') return res.status(409).json({ error: `cannot submit: status is ${wf.status}` })
 
   const { count } = await supabaseAdmin
@@ -324,8 +367,8 @@ router.post('/:id/submit', requireAuth, requireTenant, requirePermission('workfl
 
 // ── Approbation : in_review → published ─────────────────────────────────────
 router.post('/:id/approve', requireAuth, requireTenant, requirePermission('workflow.approve'), async (req: AuthedRequest, res) => {
-  const { data: wf } = await supabaseAdmin.from('workflow_definitions').select('*').eq('id', req.params.id).single()
-  if (!wf) return res.status(404).json({ error: 'workflow not found' })
+  const wf = await loadOwnWorkflow(req.params.id, req, res)
+  if (!wf) return
   if (wf.status !== 'in_review') return res.status(409).json({ error: `cannot approve: status is ${wf.status}` })
 
   const now = new Date().toISOString()
@@ -361,8 +404,8 @@ router.post('/:id/approve', requireAuth, requireTenant, requirePermission('workf
 router.post('/:id/reject', requireAuth, requireTenant, requirePermission('workflow.approve'), async (req: AuthedRequest, res) => {
   const parsed = rejectInput.safeParse(req.body)
   if (!parsed.success) return res.status(400).json({ error: 'comment (motif de rejet) obligatoire' })
-  const { data: wf } = await supabaseAdmin.from('workflow_definitions').select('*').eq('id', req.params.id).single()
-  if (!wf) return res.status(404).json({ error: 'workflow not found' })
+  const wf = await loadOwnWorkflow(req.params.id, req, res)
+  if (!wf) return
   if (wf.status !== 'in_review') return res.status(409).json({ error: `cannot reject: status is ${wf.status}` })
 
   const { error } = await supabaseAdmin
@@ -399,12 +442,15 @@ router.post('/:id/duplicate', requireAuth, requireTenant, requirePermission('wor
   if (!detail) return
   const { workflow: source, actions } = detail
 
-  const newCode = `${source.id}_V${source.version + 1}`
-  const { data: dupe } = await supabaseAdmin.from('workflow_definitions').select('id').eq('id', newCode).single()
+  // La copie est TOUJOURS propre au tenant (même si la source est un workflow global)
+  const tenantId = req.user!.tenant_id!
+  const newCode = ownId(`${baseCode(source.id)}_V${source.version + 1}`, tenantId)
+  const { data: dupe } = await supabaseAdmin.from('workflow_definitions').select('id').eq('id', newCode).maybeSingle()
   if (dupe) return res.status(409).json({ error: `version déjà existante: ${newCode}` })
 
   const { error: wfErr } = await supabaseAdmin.from('workflow_definitions').insert({
     id: newCode,
+    tenant_id: tenantId,
     name: source.name,
     standard_clause: source.standard_clause,
     version: source.version + 1,
@@ -432,8 +478,8 @@ router.post('/:id/duplicate', requireAuth, requireTenant, requirePermission('wor
 router.post('/:id/deprecate', requireAuth, requireTenant, requirePermission('workflow.approve'), async (req: AuthedRequest, res) => {
   const parsed = reasonInput.safeParse(req.body)
   if (!parsed.success) return res.status(400).json({ error: 'change_reason (motif) obligatoire' })
-  const { data: wf } = await supabaseAdmin.from('workflow_definitions').select('*').eq('id', req.params.id).single()
-  if (!wf) return res.status(404).json({ error: 'workflow not found' })
+  const wf = await loadOwnWorkflow(req.params.id, req, res)
+  if (!wf) return
   if (wf.status === 'deprecated') return res.status(409).json({ error: 'workflow déjà déprécié' })
 
   const { error } = await supabaseAdmin
@@ -453,8 +499,8 @@ router.post('/:id/deprecate', requireAuth, requireTenant, requirePermission('wor
 
 // ── Suppression (draft/in_review/deprecated, jamais instancié) ──────────────
 router.delete('/:id', requireAuth, requireTenant, requirePermission('workflow.approve'), async (req: AuthedRequest, res) => {
-  const { data: wf } = await supabaseAdmin.from('workflow_definitions').select('*').eq('id', req.params.id).single()
-  if (!wf) return res.status(404).json({ error: 'workflow not found' })
+  const wf = await loadOwnWorkflow(req.params.id, req, res)
+  if (!wf) return
   if (!['draft', 'in_review', 'deprecated'].includes(wf.status)) {
     return res.status(409).json({ error: "un workflow publié n'est jamais supprimé — utilisez deprecate" })
   }

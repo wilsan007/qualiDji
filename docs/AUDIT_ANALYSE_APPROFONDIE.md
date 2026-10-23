@@ -105,7 +105,7 @@ Légende : **Bloquant/Critique** = à corriger avant toute donnée réelle · **
 - Les règles ne sont pas appliquées côté serveur : `POST /steps/:actionId/steps/:stepId/submit` accepte n'importe quelle valeur (`z.any()`), n'importe quel `stepId` (même d'un autre workflow), à n'importe quel statut d'action (clôturée, approuvée), par n'importe quel membre ayant `action.submit` (pas de contrôle d'assignation). `POST /actions/:id/submit` ne vérifie ni l'état des étapes obligatoires, ni la `validation_rule`, ni les `guardrails`. Seul `min_length:N` est contrôlé, **dans le navigateur** ([WorkflowStep.tsx](../apps/frontend/src/components/WorkflowStep.tsx)).
 - `GET /actions/:id` ne restreint pas un `operator` à ses propres actions (seule la liste `/assigned` le fait).
 
-**C5 — Ruptures d'isolation multi-tenant sur les référentiels « globaux »**
+**C5 — Ruptures d'isolation multi-tenant sur les référentiels « globaux »** *(corrigé en local, §15)*
 - La bibliothèque de workflows n'a pas de `tenant_id` (voulu), mais [workflows.ts](../apps/backend/src/routes/workflows.ts) laisse n'importe quel détenteur de `workflow.approve` / `workflow.create` / `workflow.edit_draft` — **de n'importe quel tenant** — approuver, déprécier, dupliquer ou supprimer les brouillons et les workflows des autres tenants, et lister leurs brouillons (`?include_all=1`). Le tenant A peut déprécier `WF_CONTEXT_ANALYSIS` pour tous.
 - [matrix.ts](../apps/backend/src/routes/matrix.ts) `PATCH /matrix/requirements/:id` modifie directement le catalogue `requirements` (responsable, preuve attendue, contrôle logiciel, méthode de vérification) **partagé entre tous les tenants**, avec la seule permission `workflow.edit_draft` (donnée à `site_manager`, `consultant`…).
 
@@ -119,7 +119,7 @@ Légende : **Bloquant/Critique** = à corriger avant toute donnée réelle · **
 
 ### ÉLEVÉS
 
-**H1 — Les gestionnaires d'audits internes n'accèdent pas à leur propre module**
+**H1 — Les gestionnaires d'audits internes n'accèdent pas à leur propre module** *(corrigé en local, §15)*
 `GET /audits` et `GET /audits/:id`, ainsi que l'entrée de menu « Audits internes » ([Layout.tsx](../apps/frontend/src/components/Layout.tsx)), exigent `internal_audit.respond`. La migration 0013 attribue `respond` à `quality_manager, site_manager, department_manager, process_owner, operator` et `manage` à `tenant_admin, quality_manager, internal_auditor`. Résultat : **`internal_auditor` et `tenant_admin` (hors rôles plateforme) reçoivent 403 sur la liste et ne voient pas le menu**. À l'inverse, tout `operator` peut répondre à n'importe quel constat du tenant (aucun contrôle qu'il en est le responsable), et l'`auditor_id` accepte n'importe quel membre (le rôle n'est pas vérifié côté serveur). `external_auditor` n'a aucun accès au programme d'audit.
 
 **H2 — Contrôle documentaire (§8.6) incomplet**
@@ -439,3 +439,48 @@ Non commité.
 - Le compteur du limiteur reste **en mémoire**, donc par instance : plusieurs instances multiplient le quota (Redis à prévoir).
 - `.env.example` contient toujours l'URL et la clé publiable d'un projet Supabase réel (H6) — à remplacer par des valeurs locales ou des gabarits : non fait, à valider avec vous car cela change le démarrage documenté.
 - Le gestionnaire d'erreurs journalise les 413 (corps trop gros) comme des erreurs applicatives et renvoie `err.message` brut pour les 500 (M4).
+
+---
+
+## 15. C5 + H1 — isolation des référentiels et accès aux audits internes (23/10/2026)
+
+Commité jusqu'au §14 (`b7bce3f`, branche `fix/audit-remediation-c1-c7`) ; ce qui suit est **non commité**. Migration [0018](../supabase/migrations/20261016000018_tenant_scoped_referentials.sql).
+
+### C5 — référentiels « globaux »
+| Avant | Après |
+|---|---|
+| Tout détenteur de `workflow.approve/create/edit_draft` de **n'importe quel tenant** approuvait, dépréciait, dupliquait ou supprimait les workflows des autres tenants (y compris le seed `WF_CONTEXT_ANALYSIS`) et listait leurs brouillons | `workflow_definitions.tenant_id` : `NULL` = bibliothèque **globale**, **lecture seule** (403 `ERR_WORKFLOW_GLOBAL_READONLY` pour submit / approve / reject / deprecate / delete / PUT) ; sinon workflow propre au tenant. Un workflow d'un autre tenant est **invisible** (404 partout, absent des listes) |
+| Dupliquer un workflow global n'était pas possible sans le modifier pour tous | `POST /workflows/:id/duplicate` crée une **copie propre au tenant** ; les identifiants des workflows de tenant portent un suffixe `__<8 car. du tenant>` : pas de collision ni de fuite d'existence entre tenants |
+| `PATCH /matrix/requirements/:id` réécrivait le **catalogue** `requirements` commun à tous les tenants | les champs K.2 (responsable, contrôle logiciel, preuve attendue, méthode de vérification) sont des **surcharges par tenant** dans `requirement_assessments` ; le catalogue n'est plus écrit par l'API tenant |
+| Instanciation d'action et guidage IA acceptaient la définition d'un workflow d'un autre tenant | refus 404 si le workflow n'est ni global ni du tenant ; le rapport « paquet d'audit » ne compte plus que les workflows visibles |
+| Supprimer un tenant échouait (FK `workflow_actions`) | `ON DELETE CASCADE` jusqu'aux étapes |
+
+Interface : badge « global » et seule la duplication offerte sur les workflows globaux.
+
+### H1 — audits internes
+| Avant | Après |
+|---|---|
+| `tenant_admin` et `internal_auditor` (porteurs de `manage` mais pas de `respond`) recevaient 403 sur la liste et ne voyaient pas le menu | liste et détail ouverts à `manage` **ou** `respond` ; menu idem |
+| Tout `operator` répondait à n'importe quel constat | seul le **responsable de processus désigné** répond (`ERR_NOT_PROCESS_OWNER`) ; sans responsable désigné, tout répondant |
+| N'importe quel membre pouvait être désigné auditeur ; un `process_owner_id` d'un autre tenant était accepté | rôle d'auditeur contrôlé côté serveur (`ERR_AUDITOR_ROLE`) ; responsable de processus obligatoirement du tenant **et** porteur de `internal_audit.respond` |
+
+Le test E2E existant désignait un `reader` comme responsable de processus pendant qu'un opérateur répondait : il validait précisément le défaut. Il est corrigé.
+
+### Outillage de recette (défauts trouvés en route)
+- `pnpm --filter @iso/backend cleanup:e2e` **ne pouvait pas fonctionner** : le script pointait `scripts/cleanup_e2e_accounts.ts` alors que le fichier était à la racine du dépôt. Il est déplacé dans `apps/backend/scripts/`.
+- Le nettoyage échouait aussi après une exécution complète (suppression des utilisateurs avant le tenant). Il supprime maintenant les tenants d'abord (cascade), purge les fichiers de preuve du bucket, puis les comptes, y compris les comptes d'invitation `e2e_test_<horodatage>`.
+- Le provisionnement crée désormais un **second tenant (B)** et des comptes `b.qm.test`, `b.ta.test`, plus un `auditor.test` (internal_auditor) dans le tenant A : les tests d'isolation sont permanents (et exécutés par la CI).
+
+### Vérifications
+| Contrôle | Résultat |
+|---|---|
+| E2E `e2e_rbac.sh` contre `node dist/server.js` | **278/278** (+45 : B ne voit/ne modifie rien de A, le global est en lecture seule pour A **et** B, copies distinctes par tenant, surcharges K.2 isolées, instanciation et IA refusées inter-tenants, audits pour TA/auditeur, reader refusé, usurpation de réponse, auditeur/responsable invalides) |
+| Parcours d'actions 9/9, preuves et falsification 17/17 | OK |
+| Tests frontend | **78** (+1 : le menu « Audits internes » pour `manage` seul) |
+| `tsc`, base finale | OK ; 0 tenant / utilisateur / fichier, 1 workflow global |
+
+### Reste ouvert
+- **Les rôles plateforme** (`super_admin`, `technical_admin`) n'ont pas de tenant et `requireTenant` les exclut de ces routes : la bibliothèque globale se gère aujourd'hui par migration/SQL ; il n'existe pas d'API d'administration de la bibliothèque globale.
+- Rattrapage : la migration rattache à leur tenant les workflows existants dont l'auteur (`created_by`) appartient à un tenant ; ceux sans auteur (seed) restent globaux. À contrôler sur un environnement réel avant déploiement.
+- Un code explicite de workflow choisi par un tenant reste suffixé (`CODE__<tenant>`) : l'interface affiche cet identifiant technique.
+- Séparation des tâches auteur/approbateur des workflows et documents (H3) : non traitée.

@@ -121,11 +121,12 @@ router.post('/', requireAuth, requireTenant, requirePermission('action.assign'),
   // La définition doit appartenir à un workflow PUBLIÉ et actif (jamais un brouillon)
   const { data: def } = await supabaseAdmin
     .from('workflow_actions')
-    .select('id, workflow_id, title, workflow_definitions(id, status, is_active)')
+    .select('id, workflow_id, title, workflow_definitions(id, status, is_active, tenant_id)')
     .eq('id', action_def_id)
     .maybeSingle()
   const wd = Array.isArray(def?.workflow_definitions) ? def?.workflow_definitions[0] : def?.workflow_definitions
-  if (!def || !wd) return res.status(404).json({ error: 'action definition not found' })
+  // Définition inconnue, ou workflow d'un AUTRE tenant : indiscernables (404)
+  if (!def || !wd || (wd.tenant_id !== null && wd.tenant_id !== tenantId)) return res.status(404).json({ error: 'action definition not found' })
   if (wd.status !== 'published' || wd.is_active === false) {
     return conflict(res, 'ERR_WORKFLOW_NOT_PUBLISHED', "le workflow n'est pas publié : seules les définitions publiées sont instanciables")
   }

@@ -57,7 +57,7 @@ jobs:
           SUPABASE_ANON_KEY: ci-dummy-anon-key
           SUPABASE_SERVICE_ROLE_KEY: ci-dummy-service-role-key
 
-      # Tests frontend (vitest + jsdom + @testing-library) : 77 tests covering
+      # Tests frontend (vitest + jsdom + @testing-library) : 78 tests covering
       # le gating par permissions, la file hors ligne, la couche API, les
       # composants Audits / Revues / Layout. Aucun réseau requis.
       - name: Tests unitaires frontend
@@ -105,7 +105,7 @@ jobs:
         env:
           E2E_PASSWORD: Qualidji!RBAC2026
 
-      # ── Backend + suite E2E (233 checks) ────────────────────────────────
+      # ── Backend + suite E2E (278 checks) ────────────────────────────────
       - name: Démarrage du backend
         run: |
           # L'E2E teste l'artefact tel qu'il sera déployé (dist), pas le mode dev tsx.

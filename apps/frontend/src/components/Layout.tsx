@@ -16,6 +16,8 @@ interface NavItem {
   icon: LucideIcon
   /** Permission requise pour voir l'entrée (RBAC V5 §3.3) — absent = tous rôles */
   perm?: string
+  /** Visible si l'utilisateur détient AU MOINS UNE de ces permissions (ex. audits : gestion OU réponse) */
+  anyPerm?: string[]
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -28,7 +30,7 @@ const NAV_ITEMS: NavItem[] = [
   { path: '/users', label: 'Utilisateurs', icon: Users2, perm: 'user.manage' },
   { path: '/reports', label: 'Rapports', icon: FileBarChart2, perm: 'action.approve' },
   { path: '/documents', label: 'Documents', icon: FileText, perm: 'document.read' },
-  { path: '/audits', label: 'Audits internes', icon: ClipboardCheck, perm: 'internal_audit.respond' },
+  { path: '/audits', label: 'Audits internes', icon: ClipboardCheck, anyPerm: ['internal_audit.manage', 'internal_audit.respond'] },
   { path: '/reviews', label: 'Revues direction', icon: CalendarCheck, perm: 'management_review.manage' },
 ]
 
@@ -51,7 +53,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       </div>
 
       <nav className="flex-1 px-3 space-y-1 overflow-y-auto">
-        {NAV_ITEMS.filter((item) => !item.perm || has(item.perm)).map((item) => {
+        {NAV_ITEMS.filter((item) => (!item.perm || has(item.perm)) && (!item.anyPerm || item.anyPerm.some((p) => has(p)))).map((item) => {
           const Icon = item.icon
           const isActive =
             location.pathname === item.path || location.pathname.startsWith(item.path + '/')

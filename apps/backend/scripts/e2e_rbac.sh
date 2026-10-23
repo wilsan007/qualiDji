@@ -99,6 +99,9 @@ echo "-- Logins --"
 QM_TOKEN="$(login "$RBAC_QM_EMAIL")"
 OP_TOKEN="$(login "$RBAC_OP_EMAIL")"
 TA_TOKEN="$(login "$RBAC_TA_EMAIL")"
+MEMBER_TOKEN="$(login e2e.member@qualidji.fr)"   # reader : aucun droit d'exécution
+B_QM_TOKEN="$(login "${RBAC_B_QM_EMAIL:-b.qm.test@qualidji.fr}")"   # tenant B (isolation inter-tenants)
+B_TA_TOKEN="$(login "${RBAC_B_TA_EMAIL:-b.ta.test@qualidji.fr}")"
 echo "  ✓ QM ($RBAC_QM_EMAIL) — token obtenu"
 echo "  ✓ OP ($RBAC_OP_EMAIL) — token obtenu"
 echo "  ✓ TA ($RBAC_TA_EMAIL) — token obtenu (tenant_admin : user.manage + workflow.approve)"
@@ -137,6 +140,7 @@ check 'QM DELETE /evidence/<fake> → pas 403/500 (404 attendu)' '!403,500' "$QM
 # Parcours RÉEL (sans UUID factice) : les checks ci-dessus n'excluent que 403/500
 # et ne détectaient donc pas une insertion CAPA qui échouait en 400.
 echo "-- NC → CAPA → efficacité → registre (parcours réel) --"
+expect_eq() { if [ "$2" = "$3" ]; then PASS=$((PASS + 1)); echo "  ✓ $1"; else FAIL=$((FAIL + 1)); echo "  ✗ $1 (attendu '$3', obtenu '$2')"; fi; }
 pyget() { python3 -c 'import json,sys;d=json.load(open(sys.argv[1]))
 for k in sys.argv[2].split("."):
     d=d.get(k,{}) if isinstance(d,dict) else {}
@@ -197,15 +201,16 @@ check 'QM GET /dashboard/quality → 200 (action.approve)'       200        "$QM
 check 'OP GET /dashboard/quality → 403 action.approve'         403        "$OP_TOKEN"  GET /dashboard/quality
 
 echo "-- Module B : bibliothèque de workflows (V5 §5.2) --"
-# Nettoyage préalable (re-runs)
-curl -s -m 20 -X DELETE "$API_URL/workflows/E2E_RBAC_WF_V2" -H "Authorization: Bearer $QM_TOKEN" > /dev/null
-curl -s -m 20 -X POST "$API_URL/workflows/E2E_RBAC_WF/deprecate" -H "Authorization: Bearer $QM_TOKEN" -H 'Content-Type: application/json' -d '{"change_reason":"re-run"}' > /dev/null
-curl -s -m 20 -X DELETE "$API_URL/workflows/E2E_RBAC_WF" -H "Authorization: Bearer $QM_TOKEN" > /dev/null
+# Nettoyage préalable (re-runs) : les workflows du tenant portent un suffixe __<tenant> → on les retrouve par liste
+for OLD_WF in $(curl -s -m 20 "$API_URL/workflows?include_all=1" -H "Authorization: Bearer $QM_TOKEN" | python3 -c 'import sys,json;print(" ".join(w["id"] for w in json.load(sys.stdin).get("workflows",[]) if w["id"].startswith("E2E_RBAC_WF") and w.get("tenant_id")))' 2>/dev/null); do
+  curl -s -m 20 -X POST "$API_URL/workflows/$OLD_WF/deprecate" -H "Authorization: Bearer $QM_TOKEN" -H 'Content-Type: application/json' -d '{"change_reason":"re-run"}' > /dev/null
+  curl -s -m 20 -X DELETE "$API_URL/workflows/$OLD_WF" -H "Authorization: Bearer $QM_TOKEN" > /dev/null
+done
 WF_BODY='{"code":"E2E_RBAC_WF","name":"Workflow E2E RBAC","standard_clause":"8.1","actions":[{"title":"Controle E2E","objective":"Valider le cycle de publication","assigned_role":"operator","steps":[{"sequence":1,"title":"Resultat","instruction":"Saisir le resultat du controle","step_type":"text_input","required":true}]}]}'
 check 'OP POST /workflows → 403 workflow.create'         403       "$OP_TOKEN"  POST /workflows "$WF_BODY"
 WF_CODE=$(curl -s -m 20 -X POST "$API_URL/workflows" -H "Authorization: Bearer $QM_TOKEN" -H 'Content-Type: application/json' -d "$WF_BODY" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("workflow",{}).get("id",""))' 2>/dev/null)
-if [ "$WF_CODE" = "E2E_RBAC_WF" ]; then
-  PASS=$((PASS + 1)); echo "  ✓ QM POST /workflows → 201 (draft E2E_RBAC_WF)"
+if printf '%s' "$WF_CODE" | grep -Eq '^E2E_RBAC_WF__[0-9a-f]{8}$'; then
+  PASS=$((PASS + 1)); echo "  ✓ QM POST /workflows → 201 (draft $WF_CODE, id suffixé par le tenant)"
 else
   FAIL=$((FAIL + 1)); echo "  ✗ QM POST /workflows → échec création (WF_CODE='$WF_CODE')"
 fi
@@ -216,10 +221,60 @@ check 'OP POST /workflows/<wf>/approve → 403'             403       "$OP_TOKEN
 # Séparation des tâches (§6.3) : le workflow créé par QM est approuvé par le TA —
 # l'approbateur different notifie le créateur (pas d'auto-notification).
 check 'TA POST /workflows/<wf>/approve → 200 published'   200       "$TA_TOKEN"  POST "/workflows/$WF_CODE/approve" '{}'
+
+echo "-- C5 : un autre tenant (B) ne voit ni ne modifie le workflow publié du tenant A --"
+WF_DEF_ID="${WF_CODE}__A1"
+check 'B-QM GET /workflows/<wf de A> → 404'                         404 "$B_QM_TOKEN" GET "/workflows/$WF_CODE"
+CODE=$(curl -s -m 20 "$API_URL/workflows?include_all=1" -H "Authorization: Bearer $B_QM_TOKEN" | python3 -c "import sys,json;print('oui' if any(w['id']=='$WF_CODE' for w in json.load(sys.stdin).get('workflows',[])) else 'non')" 2>/dev/null)
+expect_eq "B-QM ne liste pas le workflow de A (include_all=1)" "$CODE" non
+for act in submit approve; do
+  check "B-QM POST /workflows/<wf de A>/$act → 404"                 404 "$B_QM_TOKEN" POST "/workflows/$WF_CODE/$act" '{}'
+done
+check 'B-QM POST /workflows/<wf de A>/deprecate → 404'              404 "$B_QM_TOKEN" POST "/workflows/$WF_CODE/deprecate" '{"change_reason":"tentative inter-tenant"}'
+check 'B-QM POST /workflows/<wf de A>/duplicate → 404'              404 "$B_QM_TOKEN" POST "/workflows/$WF_CODE/duplicate" '{"change_reason":"tentative inter-tenant"}'
+check 'B-QM PUT /workflows/<wf de A> → 404'                         404 "$B_QM_TOKEN" PUT "/workflows/$WF_CODE" "$WF_BODY"
+check 'B-QM DELETE /workflows/<wf de A> → 404'                      404 "$B_QM_TOKEN" DELETE "/workflows/$WF_CODE"
+B_TA_ID="$(curl -s -m 20 "$API_URL/users" -H "Authorization: Bearer $B_TA_TOKEN" | python3 -c "import sys,json;print(next((u['id'] for u in json.load(sys.stdin).get('users',[]) if u['email']=='b.ta.test@qualidji.fr'),''))" 2>/dev/null)"
+check 'B-QM instancie une action du workflow de A → 404'            404 "$B_QM_TOKEN" POST /actions "{\"action_def_id\":\"$WF_DEF_ID\",\"assigned_to\":\"$B_TA_ID\"}"
+check 'B-TA demande un guidage IA sur l’action de A → 404'          404 "$B_TA_TOKEN" POST /ai/guidance "{\"actionId\":\"$WF_DEF_ID\"}"
+expect_eq "après les tentatives de B, le workflow de A est inchangé (published)" "$(curl -s -m 20 "$API_URL/workflows/$WF_CODE" -H "Authorization: Bearer $QM_TOKEN" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("workflow",{}).get("status",""))' 2>/dev/null)" published
 check 'QM duplicate → 201 (V2 brouillon)'                 201       "$QM_TOKEN"  POST "/workflows/$WF_CODE/duplicate" '{"change_reason":"E2E duplication"}'
-check 'QM DELETE V2 brouillon → 204'                      204       "$QM_TOKEN"  DELETE "/workflows/${WF_CODE}_V2" '{}'
+WF_V2="$(pyget workflow.id)"
+case "$WF_V2" in E2E_RBAC_WF_V2__*) PASS=$((PASS + 1)); echo "  ✓ copie V2 : $WF_V2 (suffixe tenant, version incrémentée)" ;; *) FAIL=$((FAIL + 1)); echo "  ✗ id de la copie V2 inattendu : '$WF_V2'" ;; esac
+check 'QM DELETE V2 brouillon → 204'                      204       "$QM_TOKEN"  DELETE "/workflows/$WF_V2" '{}'
 check 'QM deprecate V1 → 200'                             200       "$QM_TOKEN"  POST "/workflows/$WF_CODE/deprecate" '{"change_reason":"E2E cloture"}'
 check 'QM DELETE V1 déprécié → 204'                       204       "$QM_TOKEN"  DELETE "/workflows/$WF_CODE" '{}'
+
+echo "-- C5 : bibliothèque GLOBALE en lecture seule, copies par tenant, catalogue d’exigences non modifiable --"
+GLOBAL_WF=WF_CONTEXT_ANALYSIS
+CODE=$(curl -s -m 20 "$API_URL/workflows" -H "Authorization: Bearer $B_QM_TOKEN" | python3 -c "import sys,json;print('oui' if any(w['id']=='$GLOBAL_WF' for w in json.load(sys.stdin).get('workflows',[])) else 'non')" 2>/dev/null)
+expect_eq "B-QM voit le workflow global $GLOBAL_WF" "$CODE" oui
+for who in QM B_QM; do
+  eval "TOK=\$${who}_TOKEN"
+  check "$who deprecate du workflow global → 403 lecture seule"     403 "$TOK" POST "/workflows/$GLOBAL_WF/deprecate" '{"change_reason":"tentative sur la bibliothèque globale"}'
+  grep -q ERR_WORKFLOW_GLOBAL_READONLY "$BODY_FILE" && { PASS=$((PASS + 1)); echo "  ✓ … code ERR_WORKFLOW_GLOBAL_READONLY"; } || { FAIL=$((FAIL + 1)); echo "  ✗ … code ERR_WORKFLOW_GLOBAL_READONLY absent"; }
+  check "$who DELETE du workflow global → 403"                      403 "$TOK" DELETE "/workflows/$GLOBAL_WF"
+  check "$who approve du workflow global → 403"                     403 "$TOK" POST "/workflows/$GLOBAL_WF/approve" '{}'
+  check "$who submit du workflow global → 403"                      403 "$TOK" POST "/workflows/$GLOBAL_WF/submit" '{}'
+  check "$who PUT du workflow global → 403"                         403 "$TOK" PUT "/workflows/$GLOBAL_WF" "$WF_BODY"
+done
+expect_eq "le workflow global est toujours publié" "$(curl -s -m 20 "$API_URL/workflows/$GLOBAL_WF" -H "Authorization: Bearer $B_QM_TOKEN" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("workflow",{}).get("status",""))' 2>/dev/null)" published
+check 'QM(A) duplique le workflow global → 201 (copie propre au tenant)' 201 "$QM_TOKEN" POST "/workflows/$GLOBAL_WF/duplicate" '{"change_reason":"E2E personnalisation tenant A"}'
+COPY_A="$(pyget workflow.id)"
+check 'B-QM duplique le même workflow global → 201 (pas de collision)'   201 "$B_QM_TOKEN" POST "/workflows/$GLOBAL_WF/duplicate" '{"change_reason":"E2E personnalisation tenant B"}'
+COPY_B="$(pyget workflow.id)"
+if [ -n "$COPY_A" ] && [ -n "$COPY_B" ] && [ "$COPY_A" != "$COPY_B" ]; then PASS=$((PASS + 1)); echo "  ✓ copies distinctes : $COPY_A / $COPY_B"; else FAIL=$((FAIL + 1)); echo "  ✗ copies non distinctes ('$COPY_A' / '$COPY_B')"; fi
+check 'B-QM lit la copie de A → 404'                                 404 "$B_QM_TOKEN" GET "/workflows/$COPY_A"
+check 'B-QM modifie/supprime la copie de A → 404'                    404 "$B_QM_TOKEN" DELETE "/workflows/$COPY_A"
+check 'QM(A) supprime sa copie (brouillon) → 204'                    204 "$QM_TOKEN" DELETE "/workflows/$COPY_A"
+check 'B-QM supprime sa copie (brouillon) → 204'                     204 "$B_QM_TOKEN" DELETE "/workflows/$COPY_B"
+
+REQ_ID=ISO9001-2026-4.1
+req_owner() { curl -s -m 20 "$API_URL/matrix/requirements?clause=4" -H "Authorization: Bearer $1" | python3 -c "import sys,json;print(next((r.get('process_owner') or '' for r in json.load(sys.stdin).get('requirements',[]) if r['id']=='$REQ_ID'),'?'))" 2>/dev/null; }
+OWNER_B_BEFORE="$(req_owner "$B_QM_TOKEN")"
+check 'QM(A) PATCH matrice : responsable K.2 propre au tenant → 200' 200 "$QM_TOKEN" PATCH "/matrix/requirements/$REQ_ID" '{"reason":"E2E surcharge tenant A","process_owner":"Responsable A (E2E)"}'
+expect_eq "tenant A voit sa surcharge K.2" "$(req_owner "$QM_TOKEN")" "Responsable A (E2E)"
+expect_eq "tenant B voit TOUJOURS la valeur du catalogue (non modifiée par A)" "$(req_owner "$B_QM_TOKEN")" "$OWNER_B_BEFORE"
 
 echo "-- §3.4 Gestion des utilisateurs (user.manage) --"
 check 'OP GET /users → 403 user.manage'                    403       "$OP_TOKEN"  GET /users
@@ -353,6 +408,13 @@ check 'TA DELETE V1 déprécié → 204'                        204       "$TA_T
 
 echo "-- §9.2/§9.3 Audits internes + revues de direction --"
 check 'OP GET /audits → 200 (répondant)'                    200       "$OP_TOKEN"  GET /audits
+AUDITOR_TOKEN="$(login auditor.test@qualidji.fr)"
+check 'TA (gestion d’audit) GET /audits → 200 (était 403 : H1)'    200 "$TA_TOKEN" GET /audits
+check 'AUDITOR (internal_auditor) GET /audits → 200 (était 403 : H1)' 200 "$AUDITOR_TOKEN" GET /audits
+check 'MEMBER (reader) GET /audits → 403'                           403 "$MEMBER_TOKEN" GET /audits
+check 'AUDITOR GET /audits/members/eligible → 200'               200 "$AUDITOR_TOKEN" GET /audits/members/eligible
+check 'QM désigne un reader comme auditeur → 400 ERR_AUDITOR_ROLE'  400 "$QM_TOKEN" POST /audits "{\"title\":\"E2E mauvais auditeur\",\"scope\":\"x-test\",\"criteria\":\"x-test\",\"auditor_id\":\"$(curl -s -m 20 "$API_URL/users" -H "Authorization: Bearer $TA_TOKEN" | python3 -c "import sys,json;print(next((u['id'] for u in json.load(sys.stdin).get('users',[]) if u['email']=='e2e.member@qualidji.fr'),''))" 2>/dev/null)\"}"
+grep -q ERR_AUDITOR_ROLE "$BODY_FILE" && { PASS=$((PASS + 1)); echo "  ✓ … code ERR_AUDITOR_ROLE"; } || { FAIL=$((FAIL + 1)); echo "  ✗ … code ERR_AUDITOR_ROLE absent"; }
 check 'OP POST /audits → 403 internal_audit.manage'         403       "$OP_TOKEN"  POST /audits '{"title":"X","scope":"Y","criteria":"Z","auditor_id":"00000000-0000-0000-0000-000000000001"}'
 check 'OP POST /reviews → 403 management_review.manage'     403       "$OP_TOKEN"  POST /reviews '{"title":"X"}'
 QM_UID_E2E=$(curl -s -m 20 "$API_URL/users" -H "Authorization: Bearer $TA_TOKEN" | python3 -c "import sys,json;print(next((u['id'] for u in json.load(sys.stdin).get('users',[]) if u['email']=='$RBAC_QM_EMAIL'),''))" 2>/dev/null)
@@ -367,10 +429,14 @@ else
   FAIL=$((FAIL + 1)); echo "  ✗ création audit → $CODE | $(head -c 120 "$BODY_FILE")"
 fi
 check 'start → 200'                                          200       "$QM_TOKEN"  POST "/audits/$AUD_ID/start" '{}'
-check 'constat (process owner=OP) → 201'                     201       "$QM_TOKEN"  POST "/audits/$AUD_ID/findings" "{\"title\":\"Écart E2E\",\"description\":\"Constat de test E2E\",\"classification\":\"minor\",\"process_owner_id\":\"$E2E_MEMBER_UID\"}"
+OP_UID_E2E=$(curl -s -m 20 "$API_URL/users" -H "Authorization: Bearer $TA_TOKEN" | python3 -c "import sys,json;print(next((u['id'] for u in json.load(sys.stdin).get('users',[]) if u['email']=='operator.test@qualidji.fr'),''))" 2>/dev/null)
+check 'constat avec un reader comme responsable de processus → 400' 400 "$QM_TOKEN" POST "/audits/$AUD_ID/findings" "{\"title\":\"Écart E2E responsable invalide\",\"description\":\"Responsable sans droit de réponse\",\"classification\":\"minor\",\"process_owner_id\":\"$E2E_MEMBER_UID\"}"
+check 'constat avec un responsable hors tenant (UUID inconnu) → 400' 400 "$QM_TOKEN" POST "/audits/$AUD_ID/findings" '{"title":"Écart E2E hors tenant","description":"Responsable inconnu","classification":"minor","process_owner_id":"00000000-0000-4000-8000-000000000002"}'
+check 'constat (process owner=OP) → 201'                     201       "$QM_TOKEN"  POST "/audits/$AUD_ID/findings" "{\"title\":\"Écart E2E\",\"description\":\"Constat de test E2E\",\"classification\":\"minor\",\"process_owner_id\":\"$OP_UID_E2E\"}"
 check '2e constat (pour test mêmes mains) → 201'             201       "$QM_TOKEN"  POST "/audits/$AUD_ID/findings" "{\"title\":\"Écart E2E n2\",\"description\":\"Second constat de test\",\"classification\":\"observation\"}"
 FIND_IDS=$(curl -s -m 20 "$API_URL/audits/$AUD_ID" -H "Authorization: Bearer $QM_TOKEN" | python3 -c 'import sys,json;print(" ".join(f["id"] for f in json.load(sys.stdin).get("findings",[])))' 2>/dev/null)
 F1=$(echo "$FIND_IDS" | cut -d' ' -f1); F2=$(echo "$FIND_IDS" | cut -d' ' -f2)
+check 'QM répond au constat F1 (responsable = OP) → 403 ERR_NOT_PROCESS_OWNER' 403 "$QM_TOKEN" POST "/audits/findings/$F1/respond" '{"response":"Réponse usurpée"}'
 check 'OP répond au constat F1 → 200'                        200       "$OP_TOKEN"  POST "/audits/findings/$F1/respond" '{"response":"Cause identifiée","corrective_action":"Correction planifiée"}'
 check 'QM vérifie F1 (distinct d OP) → 200 efficace'         200       "$QM_TOKEN"  POST "/audits/findings/$F1/verify" '{"effective":true,"comment":"Preuve conforme"}'
 check 'QM répond au constat F2 → 200'                        200       "$QM_TOKEN"  POST "/audits/findings/$F2/respond" '{"response":"Réponse auditeur-test"}'

@@ -210,6 +210,8 @@ export const matrixApi = {
 // Module B — Bibliothèque de workflows (V5 §5.2)
 export interface WorkflowSummary {
   id: string
+  /** null = bibliothèque globale (lecture seule, à dupliquer) ; sinon workflow propre au tenant. */
+  tenant_id?: string | null
   name: string
   standard_clause: string
   version: number

@@ -1,8 +1,9 @@
 // ============================================================================
 // Provisionnement des comptes E2E (P7b) — CI sur pile Supabase fraîche
 //
-// Crée : 1 tenant de recette + 4 comptes GoTrue (email confirmé, mot de passe
-// connu) + les profils user_profiles rattachés au tenant avec le rôle V5.
+// Crée : 2 tenants de recette (A et B — B sert aux tests d'isolation inter-tenants, C5)
+// + 7 comptes GoTrue (email confirmé, mot de passe connu) + les profils user_profiles
+// rattachés à leur tenant avec le rôle V5.
 //
 // Usage local :  tsx scripts/provision_e2e.ts
 // Usage CI    :  SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... tsx scripts/provision_e2e.ts
@@ -28,14 +29,19 @@ const admin = createClient(url, serviceKey, {
 
 const PASSWORD = process.env.E2E_PASSWORD ?? 'Qualidji!RBAC2026'
 const TENANT_NAME = process.env.E2E_TENANT_NAME ?? 'Qualidji — Recette E2E'
+const TENANT_B_NAME = process.env.E2E_TENANT_B_NAME ?? 'Qualidji — Recette E2E B'
 
-type Role = 'quality_manager' | 'operator' | 'tenant_admin' | 'reader'
+type Role = 'quality_manager' | 'operator' | 'tenant_admin' | 'reader' | 'internal_auditor'
 
-const ACCOUNTS: Array<{ email: string; role: Role; display_name: string }> = [
-  { email: 'rbac.test@qualidji.fr', role: 'quality_manager', display_name: 'Recette QM' },
-  { email: 'operator.test@qualidji.fr', role: 'operator', display_name: 'Recette Opérateur' },
-  { email: 'ta.test@qualidji.fr', role: 'tenant_admin', display_name: 'Recette Tenant Admin' },
-  { email: 'e2e.member@qualidji.fr', role: 'reader', display_name: 'Recette Membre' },
+const ACCOUNTS: Array<{ email: string; role: Role; display_name: string; tenant: 'A' | 'B' }> = [
+  { email: 'rbac.test@qualidji.fr', role: 'quality_manager', display_name: 'Recette QM', tenant: 'A' },
+  { email: 'operator.test@qualidji.fr', role: 'operator', display_name: 'Recette Opérateur', tenant: 'A' },
+  { email: 'ta.test@qualidji.fr', role: 'tenant_admin', display_name: 'Recette Tenant Admin', tenant: 'A' },
+  { email: 'e2e.member@qualidji.fr', role: 'reader', display_name: 'Recette Membre', tenant: 'A' },
+  { email: 'auditor.test@qualidji.fr', role: 'internal_auditor', display_name: 'Recette Auditeur interne', tenant: 'A' },
+  // Tenant B : isolation inter-tenants
+  { email: 'b.qm.test@qualidji.fr', role: 'quality_manager', display_name: 'Recette QM (tenant B)', tenant: 'B' },
+  { email: 'b.ta.test@qualidji.fr', role: 'tenant_admin', display_name: 'Recette Tenant Admin (tenant B)', tenant: 'B' },
 ]
 
 let failures = 0
@@ -45,11 +51,11 @@ function fail(msg: string) {
   console.error(`  ✗ ${msg}`)
 }
 
-async function ensureTenant(): Promise<string> {
+async function ensureTenant(name: string): Promise<string> {
   const { data: existing, error } = await admin
     .from('tenants')
     .select('id')
-    .eq('name', TENANT_NAME)
+    .eq('name', name)
     .maybeSingle()
   if (error) throw error
   if (existing?.id) {
@@ -58,7 +64,7 @@ async function ensureTenant(): Promise<string> {
   }
   const { data, error: insErr } = await admin
     .from('tenants')
-    .insert({ name: TENANT_NAME })
+    .insert({ name })
     .select('id')
     .single()
   if (insErr) throw insErr
@@ -123,8 +129,10 @@ async function main() {
   console.log(`URL : ${url}`)
 
   let tenantId: string
+  let tenantBId: string
   try {
-    tenantId = await ensureTenant()
+    tenantId = await ensureTenant(TENANT_NAME)
+    tenantBId = await ensureTenant(TENANT_B_NAME)
   } catch (e) {
     console.error('  ✗ création du tenant impossible :', (e as Error).message)
     process.exit(1)
@@ -133,7 +141,7 @@ async function main() {
   for (const account of ACCOUNTS) {
     try {
       const uid = await ensureUser(account.email, PASSWORD)
-      await ensureProfile(uid, tenantId, account.role, account.display_name)
+      await ensureProfile(uid, account.tenant === 'A' ? tenantId : tenantBId, account.role, account.display_name)
       console.log(`  ✓ profil ${account.role} rattaché : ${account.email}`)
     } catch (e) {
       fail(`${account.email} : ${(e as Error).message}`)
