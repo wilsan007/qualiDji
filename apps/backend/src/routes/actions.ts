@@ -9,6 +9,7 @@ import { notifyByRoles, notifyUsers } from '../lib/notify'
 import { writeAudit } from '../lib/audit'
 import { dbFail, parsePagination } from '../lib/http'
 import { isPlatformAdmin, canSeeAllActions as canSeeAll } from '../lib/access'
+import { emailMap } from '../lib/authUsers'
 
 /**
  * Moteur d'exécution des actions (V5 §5.3) : création/assignation → exécution
@@ -106,6 +107,25 @@ router.get('/assigned', requireAuth, requireTenant, requirePermission('action.re
   const { data, error } = await query
   if (error) return dbFail(res, error, 'actions', 400)
   res.json({ actions: data ?? [] })
+})
+
+// Personnes assignables (action.assign) : même règle que checkAssignee — actives et porteuses de action.execute.
+// Sert les formulaires de création/réassignation, sans exiger user.manage.
+router.get('/assignees', requireAuth, requireTenant, requirePermission('action.assign'), async (req: AuthedRequest, res) => {
+  const { data: profiles, error } = await supabaseAdmin
+    .from('user_profiles')
+    .select('id, role, display_name, is_active')
+    .eq('tenant_id', req.user!.tenant_id!)
+  if (error) return dbFail(res, error, 'actions.assignees', 500)
+  const active = (profiles ?? []).filter((p) => p.is_active !== false)
+  const roles = [...new Set(active.map((p) => p.role))]
+  const perms = await Promise.all(roles.map((r) => getPermissionsForRole(r)))
+  const executors = new Set(roles.filter((_, i) => perms[i].has('action.execute')))
+  const emails = await emailMap()
+  const assignees = active
+    .filter((p) => executors.has(p.role))
+    .map((p) => ({ id: p.id, role: p.role, display_name: p.display_name, email: emails.get(p.id) ?? null }))
+  res.json({ assignees })
 })
 
 // Création + assignation d'une action à partir d'une définition publiée (action.assign)

@@ -34,6 +34,13 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
 }
 
 // Actions
+export interface Assignee {
+  id: string
+  role: string
+  display_name: string | null
+  email: string | null
+}
+
 export const actionsApi = {
   list: (params?: { status?: string }) =>
     apiFetch('/actions/assigned' + (params?.status ? `?status=${params.status}` : '')),
@@ -46,6 +53,8 @@ export const actionsApi = {
     apiFetch('/actions', { method: 'POST', body: JSON.stringify(body) }),
   assign: (id: string, assigned_to: string) =>
     apiFetch(`/actions/${id}/assign`, { method: 'POST', body: JSON.stringify({ assigned_to }) }),
+  /** Personnes pouvant recevoir une action (actives, rôle porteur de action.execute) — action.assign. */
+  assignees: (): Promise<{ assignees: Assignee[] }> => apiFetch('/actions/assignees'),
   /** Approbation (action.approve) — refusée si l'approbateur a exécuté l'action (ségrégation des tâches). */
   approve: (id: string, comment?: string) =>
     apiFetch(`/actions/${id}/approve`, { method: 'POST', body: JSON.stringify({ comment }) }),
