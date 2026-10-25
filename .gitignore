@@ -41,3 +41,7 @@ pnpm-debug.log*
 # Misc
 .turbo/
 *.tsbuildinfo
+
+# Cloudflare — secrets locaux de wrangler dev
+.dev.vars
+.wrangler/
