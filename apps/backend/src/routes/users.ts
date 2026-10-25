@@ -3,6 +3,10 @@ import type { Router as ExpressRouter } from 'express'
 import { z } from 'zod'
 import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '../middleware/auth'
 import { supabaseAdmin } from '../lib/supabase'
+import { auditFromReq } from '../lib/audit'
+import { dbFail } from '../lib/http'
+import { listAllAuthUsers } from '../lib/authUsers'
+import { invalidateAuthCache } from '../middleware/auth'
 
 /**
  * §3.4 Gestion des utilisateurs — tout est gate par user.manage
@@ -32,16 +36,7 @@ const patchInput = z.object({
 })
 
 function audit(req: AuthedRequest, action: string, entityId: string, payload: Record<string, unknown> = {}) {
-  const user = req.user
-  if (!user?.tenant_id) return
-  void supabaseAdmin.from('audit_log').insert({
-    tenant_id: user.tenant_id,
-    actor_id: user.id,
-    action,
-    entity: 'user',
-    entity_id: entityId,
-    payload,
-  })
+  return auditFromReq(req, action, 'user', entityId, payload)
 }
 
 /** Profil du tenant courant — masque les utilisateurs des autres tenants (404). */
@@ -65,10 +60,9 @@ router.get('/', requireAuth, requireTenant, requirePermission('user.manage'), as
     .select('*')
     .eq('tenant_id', req.user!.tenant_id!)
     .order('created_at')
-  if (error) return res.status(500).json({ error: error.message })
+  if (error) return dbFail(res, error, 'users', 500)
 
-  const { data: listed } = await supabaseAdmin.auth.admin.listUsers()
-  const byId = new Map((listed?.users ?? []).map((u) => [u.id, u]))
+  const byId = new Map((await listAllAuthUsers()).map((u) => [u.id, u]))
 
   res.json({
     users: (profiles ?? []).map((p) => ({
@@ -113,7 +107,8 @@ router.post('/invite', requireAuth, requireTenant, requirePermission('user.manag
     if (/already|exist/i.test(msg)) {
       return res.status(409).json({ error: `utilisateur déjà existant: ${email}` })
     }
-    return res.status(400).json({ error: msg })
+    console.error('[users] invite:', msg)
+    return res.status(400).json({ error: "invitation refusée par le fournisseur d'identité", code: 'ERR_INVITE' })
   }
   const uid = invited.user?.id
   if (!uid) return res.status(500).json({ error: 'invitation GoTrue sans utilisateur' })
@@ -124,9 +119,9 @@ router.post('/invite', requireAuth, requireTenant, requirePermission('user.manag
     role,
     display_name: display_name ?? null,
   })
-  if (profErr) return res.status(400).json({ error: profErr.message })
+  if (profErr) return dbFail(res, profErr, 'users', 400)
 
-  audit(req, 'user.invite', uid, { email, role })
+  await audit(req, 'user.invite', uid, { email, role })
   res.status(201).json({
     user: { id: uid, email, role, display_name: display_name ?? null, is_active: true },
   })
@@ -155,7 +150,7 @@ router.patch('/:id', requireAuth, requireTenant, requirePermission('user.manage'
       changed_by: req.user?.id ?? null,
       reason: input.reason ?? null,
     })
-    if (hErr) return res.status(400).json({ error: hErr.message })
+    if (hErr) return dbFail(res, hErr, 'users', 400)
   }
 
   const { error: uErr } = await supabaseAdmin
@@ -166,9 +161,10 @@ router.patch('/:id', requireAuth, requireTenant, requirePermission('user.manage'
       updated_at: now,
     })
     .eq('id', profile.id)
-  if (uErr) return res.status(400).json({ error: uErr.message })
+  if (uErr) return dbFail(res, uErr, 'users', 400)
 
-  audit(req, 'user.update', profile.id, { role: input.role, display_name: input.display_name, reason: input.reason })
+  invalidateAuthCache(profile.id)
+  await audit(req, 'user.update', profile.id, { role: input.role, display_name: input.display_name, reason: input.reason })
   res.json({
     user: {
       ...profile,
@@ -191,16 +187,17 @@ router.post('/:id/deactivate', requireAuth, requireTenant, requirePermission('us
   const { error: banErr } = await supabaseAdmin.auth.admin.updateUserById(profile.id, {
     ban_duration: '876600h', // ≈ 100 ans — levé par activate
   })
-  if (banErr) return res.status(400).json({ error: banErr.message })
+  if (banErr) return dbFail(res, banErr, 'users', 400)
 
   const now = new Date().toISOString()
   const { error: uErr } = await supabaseAdmin
     .from('user_profiles')
     .update({ is_active: false, suspended_at: now, suspended_by: req.user?.id ?? null, updated_at: now })
     .eq('id', profile.id)
-  if (uErr) return res.status(400).json({ error: uErr.message })
+  if (uErr) return dbFail(res, uErr, 'users', 400)
 
-  audit(req, 'user.deactivate', profile.id)
+  invalidateAuthCache(profile.id)
+  await audit(req, 'user.deactivate', profile.id)
   res.json({ user: { id: profile.id, is_active: false, suspended_at: now } })
 })
 
@@ -213,16 +210,17 @@ router.post('/:id/activate', requireAuth, requireTenant, requirePermission('user
   const { error: banErr } = await supabaseAdmin.auth.admin.updateUserById(profile.id, {
     ban_duration: 'none',
   })
-  if (banErr) return res.status(400).json({ error: banErr.message })
+  if (banErr) return dbFail(res, banErr, 'users', 400)
 
   const now = new Date().toISOString()
   const { error: uErr } = await supabaseAdmin
     .from('user_profiles')
     .update({ is_active: true, suspended_at: null, suspended_by: null, updated_at: now })
     .eq('id', profile.id)
-  if (uErr) return res.status(400).json({ error: uErr.message })
+  if (uErr) return dbFail(res, uErr, 'users', 400)
 
-  audit(req, 'user.activate', profile.id)
+  invalidateAuthCache(profile.id)
+  await audit(req, 'user.activate', profile.id)
   res.json({ user: { id: profile.id, is_active: true, suspended_at: null } })
 })
 

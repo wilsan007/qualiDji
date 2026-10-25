@@ -25,7 +25,6 @@ const admin = createClient(url, serviceKey, {
   auth: { persistSession: false, autoRefreshToken: false },
 })
 
-const PASSWORD = process.env.E2E_PASSWORD ?? 'Qualidji!RBAC2026'
 const TENANT_NAMES = [
   process.env.E2E_TENANT_NAME ?? 'Qualidji — Recette E2E',
   process.env.E2E_TENANT_B_NAME ?? 'Qualidji — Recette E2E B',

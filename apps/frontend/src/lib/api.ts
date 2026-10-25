@@ -18,6 +18,13 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
   if (token) headers.Authorization = `Bearer ${token}`
 
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers })
+  if (res.status === 401 && token) {
+    // M10 : session expirée ou révoquée — déconnexion centralisée puis retour à la connexion.
+    const { useAuthStore } = await import('@/stores/auth')
+    await useAuthStore.getState().signOut()
+    if (typeof window !== 'undefined' && window.location.pathname !== '/login') window.location.assign('/login')
+    throw new Error('Session expirée — veuillez vous reconnecter.')
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.error ?? `API error ${res.status}`)
@@ -171,7 +178,6 @@ export const matrixApi = {
       reason: string
       applicability?: string
       na_justification?: string
-      na_approved_by?: string
       process_owner?: string
       objective_evidence?: string
       software_control?: string
@@ -182,6 +188,8 @@ export const matrixApi = {
     id: string,
     body: { kind: 'positive' | 'negative'; status: 'todo' | 'passed' | 'failed'; notes?: string }
   ) => apiFetch(`/matrix/requirements/${id}/tests`, { method: 'POST', body: JSON.stringify(body) }),
+  /** Approbation d'une non-applicabilité (K.4) : personne distincte du demandeur, identité fixée par le serveur. */
+  approveNa: (id: string) => apiFetch(`/matrix/requirements/${id}/na-approve`, { method: 'POST', body: '{}' }),
   naRegister: () => apiFetch('/matrix/na-register'),
   validations: () => apiFetch('/matrix/validations'),
 

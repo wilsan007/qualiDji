@@ -8,7 +8,7 @@
     "build": "rm -rf dist && tsc",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx scripts/test_matrix_logic.ts && tsx scripts/test_rbac_permissions.ts && tsx scripts/test_ai_controls.ts && tsx scripts/test_rate_limiter.ts && tsx scripts/test_offline_queue.ts && tsx scripts/test_step_validation.ts && tsx scripts/test_evidence_files.ts && tsx scripts/test_trust_proxy.ts",
+    "test": "tsx scripts/test_matrix_logic.ts && tsx scripts/test_rbac_permissions.ts && tsx scripts/test_ai_controls.ts && tsx scripts/test_rate_limiter.ts && tsx scripts/test_offline_queue.ts && tsx scripts/test_step_validation.ts && tsx scripts/test_evidence_files.ts && tsx scripts/test_trust_proxy.ts && tsx scripts/test_governance_rules.ts && tsx scripts/test_health_audit.ts",
     "test:rbac": "tsx scripts/test_rbac_permissions.ts",
     "test:ai": "tsx scripts/test_ai_controls.ts",
     "test:hardening": "tsx scripts/test_rate_limiter.ts",
@@ -16,9 +16,12 @@
     "test:e2e": "bash scripts/e2e_rbac.sh",
     "provision:e2e": "tsx scripts/provision_e2e.ts",
     "cleanup:e2e": "tsx scripts/cleanup_e2e_accounts.ts",
+    "lint": "eslint src scripts --max-warnings 0",
     "test:steps": "tsx scripts/test_step_validation.ts",
     "test:evidence": "tsx scripts/test_evidence_files.ts",
-    "test:deploy": "tsx scripts/test_trust_proxy.ts"
+    "test:deploy": "tsx scripts/test_trust_proxy.ts",
+    "test:governance": "tsx scripts/test_governance_rules.ts",
+    "test:health": "tsx scripts/test_health_audit.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.46.1",
@@ -27,13 +30,16 @@
     "express": "^4.21.1",
     "express-async-errors": "^3.1.1",
     "helmet": "^7.1.0",
-    "zod": "^3.23.8"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@eslint/js": "^9.13.0",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/node": "^22.9.0",
+    "eslint": "^9.13.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.14.0"
   }
 }

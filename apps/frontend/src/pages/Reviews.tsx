@@ -17,7 +17,6 @@ export default function Reviews() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [busyId, setBusyId] = useState('')
   const [title, setTitle] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
   const [decision, setDecision] = useState('')
@@ -45,8 +44,7 @@ export default function Reviews() {
     window.setTimeout(() => setNotice(''), 4000)
   }
 
-  const run = async (id: string, fn: () => Promise<unknown>, msg: string) => {
-    setBusyId(id)
+  const run = async (fn: () => Promise<unknown>, msg: string) => {
     try {
       await fn()
       flash(msg)
@@ -55,8 +53,6 @@ export default function Reviews() {
     } catch (e: any) {
       setError(e.message ?? 'opération impossible')
       return false
-    } finally {
-      setBusyId('')
     }
   }
 
@@ -66,12 +62,12 @@ export default function Reviews() {
 
   const addDecision = () => {
     if (!current || !decision.trim()) return
-    void run(current.id, () => reviewsApi.update(current.id, { decisions: [...decisions, { decision: decision.trim() }] }), 'Décision ajoutée')
+    void run(() => reviewsApi.update(current.id, { decisions: [...decisions, { decision: decision.trim() }] }), 'Décision ajoutée')
     setDecision('')
   }
   const addAction = () => {
     if (!current || !actionItem.trim()) return
-    void run(current.id, () => reviewsApi.update(current.id, { actions: [...actions, { action: actionItem.trim() }] }), 'Action ajoutée')
+    void run(() => reviewsApi.update(current.id, { actions: [...actions, { action: actionItem.trim() }] }), 'Action ajoutée')
     setActionItem('')
   }
 
@@ -88,7 +84,7 @@ export default function Reviews() {
         {canManage && (
           <div className="flex items-center gap-2">
             <input className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm" placeholder="Titre de la revue *" value={title} onChange={(e) => setTitle(e.target.value)} />
-            <button onClick={() => void run('new', async () => { await reviewsApi.create({ title }); setTitle('') }, 'Revue créée (brouillon)')}
+            <button onClick={() => void run(async () => { await reviewsApi.create({ title }); setTitle('') }, 'Revue créée (brouillon)')}
               disabled={title.trim().length < 3} className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
               <Plus className="w-4 h-4 inline mr-1" />Créer
             </button>
@@ -116,9 +112,9 @@ export default function Reviews() {
                   </span>
                   {canManage && r.status === 'draft' && (
                     <>
-                      <button onClick={(e) => { e.stopPropagation(); void run(r.id, () => reviewsApi.prefill(r.id), 'Entrées consolidées depuis les rapports') }}
+                      <button onClick={(e) => { e.stopPropagation(); void run(() => reviewsApi.prefill(r.id), 'Entrées consolidées depuis les rapports') }}
                         className="px-2.5 py-1 text-xs rounded bg-blue-50 text-blue-700 hover:bg-blue-100">Consolider les entrées</button>
-                      <button onClick={(e) => { e.stopPropagation(); void run(r.id, () => reviewsApi.hold(r.id), 'Revue tenue') }}
+                      <button onClick={(e) => { e.stopPropagation(); void run(() => reviewsApi.hold(r.id), 'Revue tenue') }}
                         className="px-2.5 py-1 text-xs rounded bg-emerald-50 text-emerald-700 hover:bg-emerald-100">Marquer tenue</button>
                     </>
                   )}
@@ -142,7 +138,7 @@ export default function Reviews() {
                         <li key={i} className="text-xs text-slate-700 flex items-center gap-2">
                           <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />{d.decision ?? d.title ?? JSON.stringify(d)}
                           {canManage && current?.status === 'draft' && (
-                            <button onClick={() => void run(current.id, () => reviewsApi.update(current.id, { decisions: decisions.filter((_, j) => j !== i) }), 'Décision retirée')}
+                            <button onClick={() => void run(() => reviewsApi.update(current.id, { decisions: decisions.filter((_, j) => j !== i) }), 'Décision retirée')}
                               className="text-rose-400 hover:text-rose-600"><X className="w-3 h-3" /></button>
                           )}
                         </li>
@@ -162,7 +158,7 @@ export default function Reviews() {
                         <li key={i} className="text-xs text-slate-700 flex items-center gap-2">
                           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />{a.action ?? a.title ?? JSON.stringify(a)}
                           {canManage && current?.status === 'draft' && (
-                            <button onClick={() => void run(current.id, () => reviewsApi.update(current.id, { actions: actions.filter((_, j) => j !== i) }), 'Action retirée')}
+                            <button onClick={() => void run(() => reviewsApi.update(current.id, { actions: actions.filter((_, j) => j !== i) }), 'Action retirée')}
                               className="text-rose-400 hover:text-rose-600"><X className="w-3 h-3" /></button>
                           )}
                         </li>

@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/Button'
 import { ShieldCheck, Mail, Lock, LogIn } from 'lucide-react'

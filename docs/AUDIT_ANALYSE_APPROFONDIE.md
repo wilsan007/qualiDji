@@ -142,7 +142,7 @@ La clé est `req.ip` sans `app.set('trust proxy', …)` : derrière nginx/Cloudf
 
 **H6 — Secrets et comptes de recette**
 - [.env.example](../apps/backend/.env.example) contient l'URL et la clé publiable d'un projet Supabase **réel** (`dtpxqxyjgfykzqftecrq`) ; le PV mentionne un autre projet distant (`aomjfwkmnpbuazltahxu`) sur lequel les E2E ont tourné. Avec C1/C2, une clé publique + un projet réel = exposition réelle.
-- Le mot de passe commun `Qualidji!RBAC2026` figure dans `ci.yml`, le PV, les scripts ; le PV précise que les comptes existent sur l'environnement distant (« à révoquer avant production »).
+- Le mot de passe commun des comptes de recette figure **en clair** dans `ci.yml`, le PV et les scripts ; le PV précise que les comptes existent sur l'environnement distant (« à révoquer avant production »). *(Corrigé en §17 : plus aucune valeur en clair dans le dépôt, mot de passe généré par run de CI.)*
 
 **H7 — Garde-fous IA moins forts que l'affichage ne le laisse croire**
 - Le `context` utilisateur n'est jamais transmis au fournisseur (`buildUserPrompt` l'ignore) ; seules ses clés sont journalisées. Les prompts du seed (`CTX_INTERNAL_FACTORS`, `CTX_EXTERNAL_FACTORS`) ne servent qu'à calculer un hash de version (première étape uniquement) : la génération utilise un prompt système générique.
@@ -484,3 +484,44 @@ Le test E2E existant désignait un `reader` comme responsable de processus penda
 - Rattrapage : la migration rattache à leur tenant les workflows existants dont l'auteur (`created_by`) appartient à un tenant ; ceux sans auteur (seed) restent globaux. À contrôler sur un environnement réel avant déploiement.
 - Un code explicite de workflow choisi par un tenant reste suffixé (`CODE__<tenant>`) : l'interface affiche cet identifiant technique.
 - Séparation des tâches auteur/approbateur des workflows et documents (H3) : non traitée.
+
+---
+
+## 16. H2, H3, H4, H6, H7 et M1–M12 (25/10/2026)
+
+Non commité. Migration [0019](../supabase/migrations/20261016000019_audit_hardening.sql). Chaîne de 19 migrations rejouée depuis zéro (`supabase db reset`), **pile locale uniquement**.
+
+| Constat | Statut | Correctif / décision |
+|---|---|---|
+| **H2** documents | corrigé | Index unique « une seule version publiée » + fonction `document_approve` atomique (publie et déprécie la précédente) ; trigger : un document publié/déprécié/archivé n'est ni supprimé ni réécrit ; classification : confidentiel/secret filtrés par rôle (propriétaire, approbateur, auteur), **exclus du corpus IA** et de la lecture directe PostgREST ; le `PUT` n'écrase plus les champs omis (ni `classification`) |
+| **H3** séparation des tâches | corrigé | Workflows et documents : l'approbateur ≠ auteur / contributeur / soumetteur (403 `ERR_SEGREGATION_OF_DUTIES`, imposé aussi par la base pour les documents). Non-applicabilité K.4 : demande (PATCH) puis approbation par `POST …/na-approve` par une autre personne, nom/fonction fixés par le serveur, `na_approved_by` libre refusé. Tests K.3 : `workflow.edit_draft` au lieu de `evidence.upload` (un opérateur ne peut plus enregistrer « passed ») |
+| **H4** piste d'audit | corrigé | `audit_log` et `ai_interventions` en ajout seul (trigger + `REVOKE` y compris `service_role`), preuves non modifiables ; écriture attendue avec nouvelle tentative, évènement perdu écrit sur stderr (`[audit-lost]`) et compteur `audit_write_failures` dans `/health` ; évènements ajoutés : NC, CAPA, efficacité, exports, consultation du journal ; `/audit-log/trace` réparé et borné au tenant. **Choix assumé** : la suppression d'une preuve reste possible tant que l'action n'est pas approuvée (route journalisée avec empreinte) |
+| **H6** secrets | partiel | Fait : `.env.example` en valeurs locales, plus de mot de passe de recette dans les scripts/CI/PV (`E2E_PASSWORD` généré par run en CI). **À faire par vous** : révoquer les comptes de recette et faire pivoter les clés des projets cloud (`dtpxqxyjgfykzqftecrq`, `aomjfwkmnpbuazltahxu`), l'historique git contenant l'ancienne URL/clé et l'ancien mot de passe ; `cleanup:e2e` avec la clé service du projet concerné supprime les comptes |
+| **H7** garde-fous IA | corrigé | Contexte utilisateur assaini transmis ; gabarits `ai_prompt_templates` utilisés par étape (version = empreinte de tous les gabarits) ; extraits de documents scannés R8 (document exclu si injection) ; `rejected_steps` alimenté ; mode gabarit journalisé `unavailable` (plus « ok ») ; quotas en base : 30/h/utilisateur, 500/j/tenant (`AI_QUOTA_*`) |
+| **M1** lint | corrigé | ESLint configuré (backend + frontend), exécuté en CI, 0 avertissement |
+| **M2** documentation | corrigé | DEPLOIEMENT.md : scripts inexistants retirés, plus d'état « close » pour les revues ; compte E2E aligné (293) |
+| **M3** atomicité | corrigé | `workflow_replace_children` (une transaction) ; transitions de statut conditionnelles (`… where status = ancien`) sur workflows, documents, audits, constats, revues |
+| **M4** validation | corrigé | `lib/http.ts` : erreurs SQL masquées au client (journalisées serveur), `limit/offset` validés, Zod sur matrice/NC, `ZodError` → 400, 413/JSON invalide → 4xx, 500 générique ; rapports calculés sur **toutes** les lignes (pagination interne, `rows_shown`/`truncated`) |
+| **M5** `listUsers` | corrigé | `lib/authUsers.ts` parcourt toutes les pages (à valider sur >1000 comptes, non testé) |
+| **M6** | corrigé (§11) | — |
+| **M7** revues | corrigé | `PUT` n'accepte plus `inputs` ; `prefill` les scelle (SHA-256 canonique) ; `hold` exige la consolidation et revérifie l'empreinte (`ERR_INPUTS_TAMPERED`) |
+| **M8** caches | corrigé | permissions : TTL 30 s (`PERMISSIONS_CACHE_TTL_MS`) ; authentification : cache 10 s (`AUTH_CACHE_TTL_MS`), purgé immédiatement dans le processus lors d'un changement de rôle/suspension ; **avec plusieurs instances, la révocation prend au plus le TTL** |
+| **M9** hors ligne | corrigé (saisie de pièces non gérée) | file liée à l'utilisateur (`user_id`), jamais rejouée sous une autre identité, vidée à la déconnexion ; file pleine = **refus explicite** (`OfflineQueueFullError`), plus d'éviction silencieuse. Reste : un rejet serveur définitif (422/409) bloque encore la tête de file ; seul `step.submit` est géré |
+| **M10** frontend | corrigé | jeton plus dupliqué dans `sessionStorage` ; 401 → déconnexion et retour à la connexion ; garde de route par permission (URL directe) ; l'écran de la matrice gère la demande et l'approbation K.4 |
+| **M11** dépendances | corrigé | `body-parser` forcé à ≥ 1.20.9 (override pnpm, déclaré dans `package.json` pour pnpm 9 et `pnpm-workspace.yaml` pour pnpm 10) ; **backend migré vers zod 4.6.7** (`z.record` à deux arguments, option `error` de `z.undefined`, `value` d'étape explicitement optionnel car `z.any()` n'accepte plus l'absence de clé) ; `zod`, `react-hook-form` et `@hookform/resolvers` retirés du frontend (jamais importés) ; **frontend migré vers react-router-dom 7.18** (aucun changement de code nécessaire : typecheck, lint, 79 tests, build et smoke Playwright 3/3 passent). `pnpm audit --prod` : **aucune vulnérabilité connue** |
+| **M12** contenu | hors code | voir [BACKLOG_CONTENU_METIER.md](./BACKLOG_CONTENU_METIER.md) : 26 codes de workflow mappés sans définition, à produire par le responsable qualité |
+
+### Vérifications (pile locale, base reconstruite de zéro)
+| Contrôle | Résultat |
+|---|---|
+| `tsc` backend + frontend, ESLint | OK, 0 avertissement |
+| Tests unitaires backend (zod 4) | RBAC 13, IA 30, limiteur 7, file hors ligne 14, étapes 34, preuves 19, proxy 9, gouvernance 13, santé/audit 5 |
+| Vitest frontend | 79/79 |
+| E2E `e2e_rbac.sh` contre `node dist/server.js` | **293/293** (1 attente adaptée à H2 : supprimer un document déprécié → 409) |
+
+### Reste ouvert
+- **H6** : rotation/révocation côté cloud (action humaine, non effectuée) ; migration 0019 non appliquée aux projets cloud.
+- **Non vérifié** : le smoke Playwright (non relancé), les écrans modifiés (matrice K.4, garde de route) n'ont été testés que par typecheck/lint/Vitest, pas dans un navigateur.
+- Couverture E2E des nouvelles règles : séparation des tâches (workflows, documents, K.4), scellé des revues (`ERR_INPUTS_TAMPERED`), quota IA (429). Non couverts par un test automatique : trigger « ajout seul » sur `audit_log` (vérifié par le garde-fou de la migration), classification des documents côté lecture directe PostgREST.
+- Plusieurs instances : compteur du limiteur de débit et cache d'authentification restent par processus.
+- Types d'étapes sans écran, action bloquée sans issue, écran d'assignation, API d'administration de la bibliothèque globale (cf. §12, §15).

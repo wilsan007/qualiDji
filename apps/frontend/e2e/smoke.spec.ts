@@ -16,9 +16,12 @@ import { test, expect } from '@playwright/test'
  */
 
 const EMAIL = process.env.E2E_EMAIL ?? 'operator.test@qualidji.fr'
-const PASSWORD = process.env.E2E_PASSWORD ?? 'Qualidji!RBAC2026'
+const PASSWORD = process.env.E2E_PASSWORD ?? ''
 
 test.describe('Parcours minimal (P7b)', () => {
+  // Le mot de passe des comptes de recette n'est plus dans le dépôt (H6) : fourni par E2E_PASSWORD.
+  test.skip(!PASSWORD && !!process.env.CI === false, 'E2E_PASSWORD non défini')
+
   test('l’écran de connexion s’affiche', async ({ page }) => {
     await page.goto('/login')
     await expect(page.getByRole('heading', { name: 'QualiDji' })).toBeVisible()

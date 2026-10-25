@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { WorkflowStep } from '@/types'
+import { justificationRequired } from '@/lib/guardrails'
 import { Button } from '@/components/ui/Button'
 
 interface WorkflowStepProps {
@@ -37,22 +38,9 @@ function ruleLabel(rule?: string): string | null {
 }
 
 /**
- * Garde-fou « require_justification » (même grammaire que le serveur) : renvoie la longueur
- * minimale de justification exigée pour ce choix, ou null si aucune. Le serveur reste l'autorité.
+ * Valeur d'une étape à choix : « choix » ou { choice, justification } quand un garde-fou l'exige.
+ * (Miroir de la grammaire serveur : voir lib/guardrails.ts — justificationRequired.)
  */
-export function justificationRequired(step: WorkflowStep, choice: string | null): number | null {
-  if (!choice) return null
-  for (const g of step.guardrails ?? []) {
-    if (g?.action !== 'require_justification' || typeof g.condition !== 'string') continue
-    const m = /^\s*choice\s*(==|!=)\s*'([^']*)'\s*$/.exec(g.condition)
-    if (!m) continue
-    const hit = m[1] === '==' ? choice === m[2] : choice !== m[2]
-    if (hit) return typeof g.min_length === 'number' ? g.min_length : 1
-  }
-  return null
-}
-
-/** Valeur d'une étape à choix : « choix » ou { choice, justification } quand un garde-fou l'exige. */
 function splitChoice(v: any): { choice: string | null; justification: string } {
   if (v && typeof v === 'object') return { choice: v.choice ?? null, justification: v.justification ?? '' }
   return { choice: typeof v === 'string' ? v : null, justification: '' }

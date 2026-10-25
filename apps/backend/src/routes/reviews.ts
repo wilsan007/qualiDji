@@ -4,6 +4,9 @@ import { z } from 'zod'
 import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '../middleware/auth'
 import { supabaseAdmin } from '../lib/supabase'
 import { loadActionsReport, loadNcCapaReport } from './reports'
+import { createHash } from 'crypto'
+import { auditFromReq } from '../lib/audit'
+import { dbFail } from '../lib/http'
 
 /**
  * §9.3 Revues de direction (WF_MANAGEMENT_REVIEW) : entrées consolidées
@@ -20,17 +23,27 @@ const reviewInput = z.object({
 const updateInput = z.object({
   title: z.string().min(3).max(300).optional(),
   scheduled_at: z.string().datetime().nullable().optional(),
-  inputs: z.record(z.any()).optional(),
-  decisions: z.array(z.record(z.any())).max(100).optional(),
-  actions: z.array(z.record(z.any())).max(100).optional(),
+  decisions: z.array(z.record(z.string(), z.any())).max(100).optional(),
+  actions: z.array(z.record(z.string(), z.any())).max(100).optional(),
 })
 
 function auditLog(req: AuthedRequest, action: string, entityId: string, payload: Record<string, unknown> = {}) {
-  const user = req.user
-  if (!user?.tenant_id) return
-  void supabaseAdmin.from('audit_log').insert({
-    tenant_id: user.tenant_id, actor_id: user.id, action, entity: 'management_review', entity_id: entityId, payload,
-  })
+  return auditFromReq(req, action, 'management_review', entityId, payload)
+}
+
+/** Empreinte stable des entrées consolidées (M7) : calculée par le serveur à la consolidation, revérifiée à la tenue. */
+export function inputsDigest(inputs: unknown): string {
+  return createHash('sha256').update(canonicalJson(inputs ?? null)).digest('hex')
+}
+
+/** JSON à clés triées : jsonb ne conserve pas l'ordre des clés, l'empreinte doit y être insensible. */
+export function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    return `{${Object.keys(obj).filter((k) => obj[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
 }
 
 // ── Liste ───────────────────────────────────────────────────────────────────
@@ -38,7 +51,7 @@ router.get('/', requireAuth, requireTenant, requirePermission('management_review
   const { data, error } = await supabaseAdmin
     .from('management_reviews').select('*').eq('tenant_id', req.user!.tenant_id!)
     .order('created_at', { ascending: false })
-  if (error) return res.status(500).json({ error: error.message })
+  if (error) return dbFail(res, error, 'reviews', 500)
   res.json({ reviews: data ?? [] })
 })
 
@@ -53,8 +66,8 @@ router.post('/', requireAuth, requireTenant, requirePermission('management_revie
       scheduled_at: parsed.data.scheduled_at ?? null, created_by: req.user!.id,
     })
     .select().single()
-  if (error) return res.status(400).json({ error: error.message })
-  auditLog(req, 'management_review.create', review.id)
+  if (error) return dbFail(res, error, 'reviews', 400)
+  await auditLog(req, 'management_review.create', review.id)
   res.status(201).json({ review })
 })
 
@@ -78,10 +91,13 @@ router.post('/:id/prefill', requireAuth, requireTenant, requirePermission('manag
     nc_capa: { total_nc: ncCapa.recorded.total_nc, total_capa: ncCapa.recorded.total_capa, ...ncCapa.computed },
     audits: { total: auditTotal ?? 0, closed: auditClosed ?? 0 },
   }
+  const now = new Date().toISOString()
   const { error } = await supabaseAdmin.from('management_reviews')
-    .update({ inputs, updated_at: new Date().toISOString() }).eq('id', review.id)
-  if (error) return res.status(400).json({ error: error.message })
-  auditLog(req, 'management_review.prefill', review.id)
+    .update({
+      inputs, inputs_sha256: inputsDigest(inputs), prefilled_at: now, prefilled_by: req.user!.id, updated_at: now,
+    }).eq('id', review.id).eq('status', 'draft')
+  if (error) return dbFail(res, error, 'reviews', 400)
+  await auditLog(req, 'management_review.prefill', review.id)
   res.json({ review: { ...review, inputs } })
 })
 
@@ -96,13 +112,12 @@ router.put('/:id', requireAuth, requireTenant, requirePermission('management_rev
   const { error } = await supabaseAdmin.from('management_reviews').update({
     ...(input.title ? { title: input.title } : {}),
     ...(input.scheduled_at !== undefined ? { scheduled_at: input.scheduled_at } : {}),
-    ...(input.inputs !== undefined ? { inputs: input.inputs } : {}),
     ...(input.decisions !== undefined ? { decisions: input.decisions } : {}),
     ...(input.actions !== undefined ? { actions: input.actions } : {}),
     updated_at: new Date().toISOString(),
-  }).eq('id', review.id)
-  if (error) return res.status(400).json({ error: error.message })
-  auditLog(req, 'management_review.update', review.id)
+  }).eq('id', review.id).eq('status', 'draft')
+  if (error) return dbFail(res, error, 'reviews', 400)
+  await auditLog(req, 'management_review.update', review.id)
   const { data: updated } = await supabaseAdmin.from('management_reviews').select('*').eq('id', review.id).single()
   res.json({ review: updated })
 })
@@ -112,19 +127,24 @@ router.post('/:id/hold', requireAuth, requireTenant, requirePermission('manageme
   const { data: review } = await supabaseAdmin.from('management_reviews').select('*').eq('tenant_id', req.user!.tenant_id!).eq('id', req.params.id).single()
   if (!review) return res.status(404).json({ error: 'review not found' })
   if (review.status !== 'draft') return res.status(409).json({ error: `cannot hold: status is ${review.status}` })
-  const hasInputs = review.inputs && Object.keys(review.inputs).length > 0
+  // Les entrées ne peuvent venir que de /prefill (le PUT ne les accepte plus) ; l'empreinte scellée à la
+  // consolidation est revérifiée : une valeur modifiée hors API invalide la tenue.
+  const hasInputs = Boolean(review.prefilled_at) && Boolean(review.inputs) && Object.keys(review.inputs).length > 0
+  const sealIntact = hasInputs && review.inputs_sha256 === inputsDigest(review.inputs)
   const hasDecisions = Array.isArray(review.decisions) && review.decisions.length > 0
-  if (!hasInputs || !hasDecisions) {
+  if (!hasInputs || !sealIntact || !hasDecisions) {
     return res.status(409).json({
-      error: 'tenue impossible : entrées consolidées (prefill) ET décisions obligatoires (§9.3)',
-      missing: { inputs: !hasInputs, decisions: !hasDecisions },
+      error: 'tenue impossible : entrées consolidées par le serveur (prefill, intactes) ET décisions obligatoires (§9.3)',
+      code: hasInputs && !sealIntact ? 'ERR_INPUTS_TAMPERED' : 'ERR_REVIEW_INCOMPLETE',
+      missing: { inputs: !hasInputs, inputs_integrity: hasInputs && !sealIntact, decisions: !hasDecisions },
     })
   }
   const now = new Date().toISOString()
-  const { error } = await supabaseAdmin.from('management_reviews')
-    .update({ status: 'held', held_at: now, updated_at: now }).eq('id', review.id)
-  if (error) return res.status(400).json({ error: error.message })
-  auditLog(req, 'management_review.hold', review.id, {
+  const { data: held, error } = await supabaseAdmin.from('management_reviews')
+    .update({ status: 'held', held_at: now, updated_at: now }).eq('id', review.id).eq('status', 'draft').select('id')
+  if (error) return dbFail(res, error, 'reviews', 400)
+  if (!held?.length) return res.status(409).json({ error: "cannot hold: la revue a changé d'état" })
+  await auditLog(req, 'management_review.hold', review.id, {
     decisions: (review.decisions as any[]).length, actions: (review.actions as any[]).length,
   })
   res.json({ review: { ...review, status: 'held', held_at: now } })

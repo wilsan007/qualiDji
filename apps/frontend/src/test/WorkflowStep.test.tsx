@@ -8,7 +8,8 @@ import { useState } from 'react'
  * le serveur, et étape d'approbation non saisissable par l'exécutant.
  * Les étapes sont celles du seed WF_CONTEXT_ANALYSIS (0001).
  */
-import { WorkflowStep, justificationRequired } from '@/components/WorkflowStep'
+import { WorkflowStep } from '@/components/WorkflowStep'
+import { justificationRequired } from '@/lib/guardrails'
 import type { WorkflowStep as WStep } from '@/types'
 
 const CLIMATE: WStep = {

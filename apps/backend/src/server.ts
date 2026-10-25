@@ -26,6 +26,8 @@ import { requireAuth, AuthedRequest } from './middleware/auth'
 import { supabaseAdmin } from './lib/supabase'
 import { rateLimit } from './lib/rateLimiter'
 import { parseTrustProxy } from './lib/trustProxy'
+import { healthRouter } from './routes/health'
+import { ZodError } from 'zod'
 
 const app: express.Application = express()
 const PORT = Number(process.env.PORT ?? 4000)
@@ -61,10 +63,8 @@ app.use(
 )
 app.use(express.json({ limit: '2mb' }))
 
-// Health
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'iso-backend', time: new Date().toISOString() })
-})
+// Health — voir routes/health.ts (échec 503 si des évènements d'audit ont été perdus, H4)
+app.use('/health', healthRouter)
 
 // API v1 — limitation de débit (§15) : fenêtre fixe par IP, generous enough
 // pour le dev et l'E2E ; 429 + Retry-After au-delà. S'applique à TOUT /api/v1, y compris
@@ -125,11 +125,24 @@ app.use((_req, res) => {
   res.status(404).json({ error: 'not found' })
 })
 
-// Error handler
+// Error handler (M4) : jamais de message interne renvoyé au client sur une erreur serveur.
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (err instanceof ZodError) {
+    return res.status(400).json({ error: 'payload invalide', code: 'ERR_INVALID_INPUT', details: err.flatten() })
+  }
+  // Erreurs du lecteur de corps (JSON invalide, corps trop gros) : ce sont des erreurs du CLIENT.
+  if (err?.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'corps de requête trop volumineux', code: 'ERR_PAYLOAD_TOO_LARGE' })
+  }
+  if (err?.type === 'entity.parse.failed' || err instanceof SyntaxError) {
+    return res.status(400).json({ error: 'JSON invalide', code: 'ERR_INVALID_JSON' })
+  }
+  const status = Number(err?.statusCode ?? err?.status)
+  if (status >= 400 && status < 500) {
+    return res.status(status).json({ error: err.expose === false ? 'requête invalide' : (err.message ?? 'requête invalide') })
+  }
   console.error(err)
-  const status = err.statusCode ?? 500
-  res.status(status).json({ error: err.message ?? 'Internal Server Error' })
+  res.status(500).json({ error: 'erreur interne', code: 'ERR_INTERNAL' })
 })
 
 app.listen(PORT, () => {

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { CheckCircle2, ClipboardList, Play, Plus, ShieldCheck, X } from 'lucide-react'
+import { CheckCircle2, ClipboardList, Play, Plus, ShieldCheck } from 'lucide-react'
 import { usePermissions } from '@/hooks/usePermissions'
 import { cn } from '@/lib/utils'
 import { auditsApi } from '@/lib/api'

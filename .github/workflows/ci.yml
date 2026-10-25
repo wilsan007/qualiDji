@@ -24,6 +24,9 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      - name: Lint (backend + frontend)
+        run: pnpm -r lint
+
       - name: Typecheck (backend + frontend)
         run: pnpm -r typecheck
 
@@ -100,12 +103,21 @@ jobs:
           echo "SUPABASE_URL=$SUPABASE_URL"
 
       # ── Provisionnement des comptes E2E (tenant + 4 rôles V5) ───────────
+      # H6 — le mot de passe des comptes de recette est généré à chaque run
+      # (plus aucun mot de passe en clair dans le dépôt) ; provisioning,
+      # suite E2E et smoke Playwright utilisent le même $E2E_PASSWORD.
+      - name: Générer le mot de passe des comptes E2E
+        run: |
+          PW="CI-$(openssl rand -hex 12)"
+          echo "E2E_PASSWORD=$PW" >> "$GITHUB_ENV"
+          echo "mot de passe E2E généré (${#PW} caractères)"
+
       - name: Provisionnement des comptes de test
         run: pnpm --filter @iso/backend exec tsx scripts/provision_e2e.ts
         env:
-          E2E_PASSWORD: Qualidji!RBAC2026
+          E2E_PASSWORD: ${{ env.E2E_PASSWORD }}
 
-      # ── Backend + suite E2E (278 checks) ────────────────────────────────
+      # ── Backend + suite E2E (293 checks) ────────────────────────────────
       - name: Démarrage du backend
         run: |
           # L'E2E teste l'artefact tel qu'il sera déployé (dist), pas le mode dev tsx.
@@ -126,14 +138,26 @@ jobs:
           RATE_LIMIT_API: 2000
           # Taille max d'une preuve : 1 Mio en CI pour tester le refus 413 sans gros fichier.
           EVIDENCE_MAX_BYTES: 1048576
+          # Quota IA resserré pour que la suite E2E puisse tester le 429 ERR_AI_QUOTA
+          # (limite par utilisateur/heure, comptée en base — voir routes/ai.ts).
+          AI_QUOTA_USER_PER_HOUR: 8
+          # Active les checks E2E « base durcie » (journal en ajout seul, scellé des
+          # revues, version unique publiée) qui écrivent directement via PostgREST
+          # avec la clé service_role : ils ne doivent PAS tourner contre un projet
+          # réel dépourvu des migrations de durcissement.
+          EXPECT_HARDENED_DB: 1
 
-      - name: Suite E2E (RBAC, modules B/G/H, IA, documents, audits)
+      - name: Suite E2E (RBAC, modules B/G/H, IA, documents, audits, durcissement)
         run: |
           cd apps/backend
           API_URL=http://localhost:4000/api/v1 \
-          AUTH_URL="$(grep '^API_URL=' /tmp/sb_env.txt | cut -d= -f2- | tr -d '"')/auth/v1" \
+          AUTH_URL="$SUPABASE_URL/auth/v1" \
           ANON_KEY="$SUPABASE_ANON_KEY" \
-          RBAC_PASSWORD=Qualidji!RBAC2026 \
+          SUPABASE_URL="$SUPABASE_URL" \
+          SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY" \
+          EXPECT_HARDENED_DB="$EXPECT_HARDENED_DB" \
+          AI_QUOTA_USER_PER_HOUR="$AI_QUOTA_USER_PER_HOUR" \
+          RBAC_PASSWORD="$E2E_PASSWORD" \
           EVIDENCE_MAX_BYTES=1048576 \
           bash scripts/e2e_rbac.sh
 
@@ -158,7 +182,7 @@ jobs:
         env:
           E2E_BASE_URL: http://localhost:5174
           E2E_EMAIL: operator.test@qualidji.fr
-          E2E_PASSWORD: Qualidji!RBAC2026
+          E2E_PASSWORD: ${{ env.E2E_PASSWORD }}
           CI: true
 
       - name: Journal du backend (en cas d'échec)

@@ -38,6 +38,11 @@ export const useAuthStore = create<AuthState>()(
         return {}
       },
       signOut: async () => {
+        // M9 : les saisies hors ligne en attente ne survivent pas à un changement de compte.
+        try {
+          const { clearOfflineQueue } = await import('@/lib/offline/db')
+          await clearOfflineQueue()
+        } catch { /* file indisponible (tests, navigation privée) : la déconnexion continue */ }
         await supabase.auth.signOut()
         set({ user: null, session: null, permissions: [] })
       },
@@ -67,7 +72,8 @@ export const useAuthStore = create<AuthState>()(
     {
       name: 'iso-auth-storage',
       storage: createJSONStorage(() => sessionStorage),
-      partialize: (state) => ({ user: state.user, session: state.session }),
+      // M10 : le jeton d'accès n'est PAS dupliqué dans sessionStorage — le client Supabase gère la session.
+      partialize: (state) => ({ user: state.user }),
     }
   )
 )

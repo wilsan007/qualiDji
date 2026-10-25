@@ -27,7 +27,12 @@ const admin = createClient(url, serviceKey, {
   auth: { persistSession: false, autoRefreshToken: false },
 })
 
-const PASSWORD = process.env.E2E_PASSWORD ?? 'Qualidji!RBAC2026'
+// Aucun mot de passe par défaut (H6) : un secret de recette commun et public n'a pas sa place dans le dépôt.
+const PASSWORD = process.env.E2E_PASSWORD ?? ''
+if (PASSWORD.length < 12) {
+  console.error('ERREUR : E2E_PASSWORD requis (12 caractères min.) — ex. E2E_PASSWORD="$(openssl rand -base64 18)"')
+  process.exit(1)
+}
 const TENANT_NAME = process.env.E2E_TENANT_NAME ?? 'Qualidji — Recette E2E'
 const TENANT_B_NAME = process.env.E2E_TENANT_B_NAME ?? 'Qualidji — Recette E2E B'
 

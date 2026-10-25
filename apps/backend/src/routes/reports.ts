@@ -2,6 +2,8 @@ import { Router } from 'express'
 import type { Router as ExpressRouter } from 'express'
 import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '../middleware/auth'
 import { supabaseAdmin } from '../lib/supabase'
+import { emailMap } from '../lib/authUsers'
+import { auditFromReq } from '../lib/audit'
 
 /**
  * Module H — Rapports et préparation d'audit (V5 §5.8).
@@ -15,6 +17,11 @@ import { supabaseAdmin } from '../lib/supabase'
  */
 const router: ExpressRouter = Router()
 
+function reportFail(res: any, e: any) {
+  console.error('[reports]', e?.message ?? e)
+  res.status(500).json({ error: 'erreur lors de la production du rapport', code: 'ERR_INTERNAL' })
+}
+
 const DAY_MS = 86_400_000
 
 function daysSince(iso: string | null | undefined): number | null {
@@ -26,9 +33,26 @@ function esc(v: unknown): string {
   return `"${String(v ?? '').replace(/"/g, '""')}"`
 }
 
-async function emailsById(): Promise<Map<string, string>> {
-  const { data } = await supabaseAdmin.auth.admin.listUsers()
-  return new Map((data?.users ?? []).map((u) => [u.id, u.email ?? u.id]))
+const emailsById = emailMap
+
+const PAGE = 1000
+/** Plafond de sécurité : au-delà, le rapport est marqué `truncated` (les agrégats ne sont plus exacts). */
+const MAX_ROWS = 20_000
+/** Rapports JSON : lignes détaillées renvoyées (les totaux/agrégats portent, eux, sur TOUTES les lignes). */
+const JSON_ROWS = 500
+
+/** Lit toutes les lignes d'une requête par pages (M4 : les totaux étaient calculés sur 500 lignes seulement). */
+async function fetchAll<T>(
+  build: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+): Promise<{ rows: T[]; truncated: boolean }> {
+  const rows: T[] = []
+  for (let from = 0; from < MAX_ROWS; from += PAGE) {
+    const { data, error } = await build(from, from + PAGE - 1)
+    if (error) throw new Error(error.message)
+    rows.push(...(data ?? []))
+    if ((data ?? []).length < PAGE) return { rows, truncated: false }
+  }
+  return { rows, truncated: true }
 }
 
 interface ActionFilters {
@@ -40,22 +64,23 @@ interface ActionFilters {
 
 /** Rapport d'actions du tenant, filtrable (§5.8). */
 export async function loadActionsReport(tenantId: string, filters: ActionFilters) {
-  let query = supabaseAdmin
-    .from('actions')
-    .select('*, workflow_definitions(id, name, standard_clause), workflow_actions(id, title, objective)')
-    .eq('tenant_id', tenantId)
-    .order('created_at', { ascending: false })
-    .limit(500)
-  if (filters.status) query = query.eq('status', filters.status)
-  if (filters.assigned_to) query = query.eq('assigned_to', filters.assigned_to)
-  if (filters.from) query = query.gte('created_at', filters.from)
-  if (filters.to) query = query.lte('created_at', filters.to)
-
-  const { data, error } = await query
-  if (error) throw new Error(error.message)
+  const { rows: data, truncated } = await fetchAll<any>((from, to) => {
+    let query = supabaseAdmin
+      .from('actions')
+      .select('*, workflow_definitions(id, name, standard_clause), workflow_actions(id, title, objective)')
+      .eq('tenant_id', tenantId)
+      .order('created_at', { ascending: false })
+      .order('id')
+      .range(from, to)
+    if (filters.status) query = query.eq('status', filters.status)
+    if (filters.assigned_to) query = query.eq('assigned_to', filters.assigned_to)
+    if (filters.from) query = query.gte('created_at', filters.from)
+    if (filters.to) query = query.lte('created_at', filters.to)
+    return query
+  })
 
   const emails = await emailsById()
-  const rows = (data ?? []).map((a) => ({
+  const rows = data.map((a: any) => ({
     id: a.id,
     workflow: (a.workflow_definitions as any)?.name ?? a.workflow_id,
     clause: (a.workflow_definitions as any)?.standard_clause ?? null,
@@ -75,28 +100,33 @@ export async function loadActionsReport(tenantId: string, filters: ActionFilters
   return {
     recorded: { total: rows.length },
     computed: { by_status: byStatus, overdue_count: rows.filter((r) => r.overdue).length },
+    truncated,
     rows,
   }
 }
 
 /** Registre NC+CAPA avec ancienneté / gravité / échéance / efficacité (§5.8). */
 export async function loadNcCapaReport(tenantId: string) {
-  const { data: ncs, error } = await supabaseAdmin
-    .from('nonconformities')
-    .select('*')
-    .eq('tenant_id', tenantId)
-    .order('created_at', { ascending: false })
-    .limit(500)
-  if (error) throw new Error(error.message)
-
-  const ncList = ncs ?? []
-  const { data: capas } = await supabaseAdmin
-    .from('capas')
-    .select('*')
-    .eq('tenant_id', tenantId)
-    .order('created_at', { ascending: false })
+  const { rows: ncList, truncated } = await fetchAll<any>((from, to) =>
+    supabaseAdmin
+      .from('nonconformities')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .order('created_at', { ascending: false })
+      .order('id')
+      .range(from, to),
+  )
+  const { rows: capas } = await fetchAll<any>((from, to) =>
+    supabaseAdmin
+      .from('capas')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .order('created_at', { ascending: false })
+      .order('id')
+      .range(from, to),
+  )
   const capasByNc = new Map<string, any[]>()
-  for (const c of capas ?? []) {
+  for (const c of capas) {
     const list = capasByNc.get(c.nonconformity_id) ?? []
     list.push(c)
     capasByNc.set(c.nonconformity_id, list)
@@ -130,7 +160,7 @@ export async function loadNcCapaReport(tenantId: string) {
   for (const r of rows) if (r.capa_status) capaStatuses[r.capa_status] = (capaStatuses[r.capa_status] ?? 0) + 1
 
   return {
-    recorded: { total_nc: rows.length, total_capa: (capas ?? []).length },
+    recorded: { total_nc: rows.length, total_capa: capas.length },
     computed: {
       open_nc: rows.filter((r) => r.status === 'open').length,
       by_severity: bySeverity,
@@ -138,6 +168,7 @@ export async function loadNcCapaReport(tenantId: string) {
       capa_overdue_count: rows.filter((r) => r.capa_overdue).length,
       effectiveness_ineffective: rows.filter((r) => r.effectiveness === 'ineffective').length,
     },
+    truncated,
     rows,
   }
 }
@@ -147,18 +178,24 @@ router.get('/actions', requireAuth, requireTenant, requirePermission('action.rea
   const { status, from, to, assigned_to } = req.query as Record<string, string>
   try {
     const report = await loadActionsReport(req.user!.tenant_id!, { status, from, to, assigned_to })
-    res.json({ filters: { status: status ?? null, from: from ?? null, to: to ?? null, assigned_to: assigned_to ?? null }, ...report })
+    res.json({
+      filters: { status: status ?? null, from: from ?? null, to: to ?? null, assigned_to: assigned_to ?? null },
+      ...report,
+      rows: report.rows.slice(0, JSON_ROWS),
+      rows_shown: Math.min(report.rows.length, JSON_ROWS),
+    })
   } catch (e: any) {
-    res.status(500).json({ error: e.message })
+    reportFail(res, e)
   }
 })
 
 // ── Registre NC+CAPA (lecture : action.read) ────────────────────────────────
 router.get('/nc-capa', requireAuth, requireTenant, requirePermission('action.read'), async (req: AuthedRequest, res) => {
   try {
-    res.json(await loadNcCapaReport(req.user!.tenant_id!))
+    const report = await loadNcCapaReport(req.user!.tenant_id!)
+    res.json({ ...report, rows: report.rows.slice(0, JSON_ROWS), rows_shown: Math.min(report.rows.length, JSON_ROWS) })
   } catch (e: any) {
-    res.status(500).json({ error: e.message })
+    reportFail(res, e)
   }
 })
 
@@ -208,7 +245,7 @@ router.get('/audit-pack', requireAuth, requireTenant, requirePermission('audit.e
       last_events: (events ?? []).map((e) => ({ ...e, actor: e.actor_id ? (emails.get(e.actor_id) ?? e.actor_id) : null })),
     })
   } catch (e: any) {
-    res.status(500).json({ error: e.message })
+    reportFail(res, e)
   }
 })
 
@@ -225,6 +262,7 @@ router.get('/actions.csv', requireAuth, requireTenant, requirePermission('audit.
   try {
     const report = await loadActionsReport(req.user!.tenant_id!, { status, from, to, assigned_to })
     const filters = `status=${status ?? '*'}; from=${from ?? '*'}; to=${to ?? '*'}; responsable=${assigned_to ?? '*'}`
+    await auditFromReq(req, 'report.export', 'report', 'actions.csv', { filters, rows: report.rows.length })
     sendCsv(
       res,
       `rapport_actions_${new Date().toISOString().slice(0, 10)}.csv`,
@@ -237,13 +275,14 @@ router.get('/actions.csv', requireAuth, requireTenant, requirePermission('audit.
       report.rows.map((r) => [r.id, r.workflow, r.clause, r.title, r.status, r.responsible, r.due_at, r.created_at, r.submitted_at, r.age_days, r.overdue ? 'OUI' : 'non'])
     )
   } catch (e: any) {
-    res.status(500).json({ error: e.message })
+    reportFail(res, e)
   }
 })
 
 router.get('/nc-capa.csv', requireAuth, requireTenant, requirePermission('audit.export'), async (req: AuthedRequest, res) => {
   try {
     const report = await loadNcCapaReport(req.user!.tenant_id!)
+    await auditFromReq(req, 'report.export', 'report', 'nc-capa.csv', { rows: report.rows.length })
     sendCsv(
       res,
       `registre_nc_capa_${new Date().toISOString().slice(0, 10)}.csv`,
@@ -256,7 +295,7 @@ router.get('/nc-capa.csv', requireAuth, requireTenant, requirePermission('audit.
       report.rows.map((r) => [r.id, r.title, r.severity, r.status, r.created_at, r.age_days, r.declared_by, r.capa_root_cause, r.capa_corrective_action, r.capa_responsible, r.capa_due_date, r.capa_status, r.capa_overdue ? 'OUI' : 'non', r.effectiveness])
     )
   } catch (e: any) {
-    res.status(500).json({ error: e.message })
+    reportFail(res, e)
   }
 })
 

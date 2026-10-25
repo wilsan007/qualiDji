@@ -7,6 +7,7 @@ import {
 import { supabaseAdmin } from '../lib/supabase'
 import { notifyByRoles, notifyUsers } from '../lib/notify'
 import { writeAudit } from '../lib/audit'
+import { dbFail, parsePagination } from '../lib/http'
 import { isPlatformAdmin, canSeeAllActions as canSeeAll } from '../lib/access'
 
 /**
@@ -82,9 +83,11 @@ async function checkAssignee(tenantId: string, assigneeId: string): Promise<stri
 router.get('/assigned', requireAuth, requireTenant, requirePermission('action.read'), async (req: AuthedRequest, res) => {
   const user = req.user
   if (!user) return res.status(401).json({ error: 'unauthenticated' })
-  const { status, limit = '50', offset = '0' } = req.query as Record<string, string>
-  const lim = Math.min(Math.max(Number.parseInt(limit, 10) || 50, 1), 200)
-  const off = Math.max(Number.parseInt(offset, 10) || 0, 0)
+  const page = parsePagination(req.query)
+  if (!page.ok) return res.status(400).json({ error: 'pagination invalide', code: 'ERR_INVALID_INPUT', details: page.details })
+  const lim = page.limit
+  const off = page.offset
+  const status = typeof req.query.status === 'string' ? req.query.status : undefined
 
   let query = supabaseAdmin
     .from('actions')
@@ -101,7 +104,7 @@ router.get('/assigned', requireAuth, requireTenant, requirePermission('action.re
   }
 
   const { data, error } = await query
-  if (error) return res.status(400).json({ error: error.message })
+  if (error) return dbFail(res, error, 'actions', 400)
   res.json({ actions: data ?? [] })
 })
 
@@ -479,7 +482,7 @@ router.post('/:id/exception', requireAuth, requireTenant, requireAnyPermission([
     .select()
     .single()
 
-  if (error) return res.status(400).json({ error: error.message })
+  if (error) return dbFail(res, error, 'actions', 400)
 
   await supabaseAdmin.from('actions').update({ status: 'blocked' }).eq('id', action.id).eq('tenant_id', tenantId)
   await writeAudit({

@@ -5,10 +5,13 @@ import { OfflineQueue, PendingMutation, QueueStorage } from './queue'
  * §13 — Persistance Dexie de la file hors ligne (navigateur uniquement).
  * Le rejeu utilise l'API existante : step_submissions est un upsert unique
  * (action_id, step_id) → rejeu idempotent côté serveur sans contrat nouveau.
+ * M9 — chaque mutation porte le user_id de son auteur (schéma v2) : le replay
+ * n'envoie que les saisies de l'utilisateur connecté, et la déconnexion vide
+ * la file (clearOfflineQueue).
  */
 
 const db = new Dexie('qualidji-offline')
-db.version(1).stores({ pending: 'id, kind, created_at' })
+db.version(2).stores({ pending: 'id, user_id, kind, created_at' })
 
 const dexieStorage: QueueStorage = {
   async load(): Promise<PendingMutation[]> {
@@ -42,7 +45,29 @@ async function sendMutation(m: PendingMutation): Promise<void> {
   throw new Error(`kind hors ligne inconnu: ${m.kind}`)
 }
 
-export const offlineQueue = new OfflineQueue(dexieStorage, sendMutation)
+/**
+ * M9 — identité courante pour la file : les mutations ne partent que pour leur
+ * auteur. Import du store sans cycle (lib/api n'importe ce module que dynamiquement).
+ */
+import { useAuthStore } from '@/stores/auth'
+
+export const offlineQueue = new OfflineQueue(
+  dexieStorage,
+  sendMutation,
+  50,
+  // lecture synchrone de l'utilisateur connecté (rafraîchi par fetchProfile)
+  () => useAuthStore.getState().user?.id ?? null,
+)
+
+/**
+ * M9 — vide la file hors ligne (appelée à la déconnexion) : les saisies d'un
+ * compte ne traversent jamais un changement d'utilisateur sur le même navigateur.
+ */
+export async function clearOfflineQueue(): Promise<void> {
+  await offlineQueue.clear()
+  emitQueueChanged()
+}
+
 
 /** Événement global « la file a changé » (UI badge). */
 export const QUEUE_CHANGED_EVENT = 'qualidji:queue-changed'

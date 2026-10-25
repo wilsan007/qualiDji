@@ -4,6 +4,9 @@ import { z } from 'zod'
 import { requireAuth, requireTenant, requirePermission, requireAnyPermission, getPermissionsForRole, AuthedRequest } from '../middleware/auth'
 import { supabaseAdmin } from '../lib/supabase'
 import { notifyUsers } from '../lib/notify'
+import { auditFromReq } from '../lib/audit'
+import { dbFail } from '../lib/http'
+import { emailMap } from '../lib/authUsers'
 
 /**
  * §9.2 Audits internes (WF_INTERNAL_AUDIT, §F.4) :
@@ -44,19 +47,16 @@ const verifyInput = z.object({
 })
 
 function auditLog(req: AuthedRequest, action: string, entityId: string, payload: Record<string, unknown> = {}) {
-  const user = req.user
-  if (!user?.tenant_id) return
-  void supabaseAdmin.from('audit_log').insert({
-    tenant_id: user.tenant_id, actor_id: user.id, action, entity: 'internal_audit', entity_id: entityId, payload,
-  })
+  return auditFromReq(req, action, 'internal_audit', entityId, payload)
 }
+
+const closeInput = z.object({ summary: z.string().trim().min(3).max(8000) })
 
 // ── Membres éligibles (auditeurs + répondants) pour les formulaires ─────────
 router.get('/members/eligible', requireAuth, requireTenant, requirePermission('internal_audit.manage'), async (req: AuthedRequest, res) => {
   const { data: profiles } = await supabaseAdmin
     .from('user_profiles').select('id, role, display_name').eq('tenant_id', req.user!.tenant_id!)
-  const { data: listed } = await supabaseAdmin.auth.admin.listUsers()
-  const emails = new Map((listed?.users ?? []).map((u) => [u.id, u.email]))
+  const emails = await emailMap()
   const members = (profiles ?? []).map((p) => ({ ...p, email: emails.get(p.id) ?? null }))
   res.json({
     auditors: members.filter((m) => AUDITOR_ROLES.includes(m.role)),
@@ -71,7 +71,7 @@ router.get('/', requireAuth, requireTenant, requireAnyPermission(ACCESS_AUDITS),
     .select('*')
     .eq('tenant_id', req.user!.tenant_id!)
     .order('created_at', { ascending: false })
-  if (error) return res.status(500).json({ error: error.message })
+  if (error) return dbFail(res, error, 'audits', 500)
   const ids = (audits ?? []).map((a) => a.id)
   const { data: findings } = ids.length
     ? await supabaseAdmin.from('audit_findings').select('*').eq('tenant_id', req.user!.tenant_id!).in('audit_id', ids)
@@ -102,7 +102,7 @@ router.post('/', requireAuth, requireTenant, requirePermission('internal_audit.m
   const input = parsed.data
 
   if (input.auditor_id === req.user!.id) {
-    auditLog(req, 'audit.auto_audit_blocked', 'n/a', { auditor_id: input.auditor_id })
+    await auditLog(req, 'audit.auto_audit_blocked', 'n/a', { auditor_id: input.auditor_id })
     return res.status(400).json({
       error: 'auto-audit interdit (§F.4) : l auditeur doit être une personne autre que vous — réaffectation exigée',
       code: 'ERR_AUTO_AUDIT',
@@ -122,8 +122,8 @@ router.post('/', requireAuth, requireTenant, requirePermission('internal_audit.m
       auditor_id: input.auditor_id, planned_at: input.planned_at ?? null, created_by: req.user!.id,
     })
     .select().single()
-  if (error) return res.status(400).json({ error: error.message })
-  auditLog(req, 'audit.create', audit.id, { auditor_id: input.auditor_id })
+  if (error) return dbFail(res, error, 'audits', 400)
+  await auditLog(req, 'audit.create', audit.id, { auditor_id: input.auditor_id })
   res.status(201).json({ audit })
 })
 
@@ -132,18 +132,20 @@ router.post('/:id/start', requireAuth, requireTenant, requirePermission('interna
   const { data: audit } = await supabaseAdmin.from('internal_audits').select('*').eq('tenant_id', req.user!.tenant_id!).eq('id', req.params.id).single()
   if (!audit) return res.status(404).json({ error: 'audit not found' })
   if (audit.status !== 'planned') return res.status(409).json({ error: `cannot start: status is ${audit.status}` })
-  const { error } = await supabaseAdmin.from('internal_audits')
+  const { data: started, error } = await supabaseAdmin.from('internal_audits')
     .update({ status: 'in_progress', started_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-    .eq('id', audit.id)
-  if (error) return res.status(400).json({ error: error.message })
-  auditLog(req, 'audit.start', audit.id)
+    .eq('id', audit.id).eq('status', 'planned').select('id')
+  if (error) return dbFail(res, error, 'audits.start')
+  if (!started?.length) return res.status(409).json({ error: "cannot start: l'audit a changé d'état" })
+  await auditLog(req, 'audit.start', audit.id)
   res.json({ audit: { ...audit, status: 'in_progress' } })
 })
 
 // ── Clôture : interdite tant qu un constat n est pas résolu ─────────────────
 router.post('/:id/close', requireAuth, requireTenant, requirePermission('internal_audit.manage'), async (req: AuthedRequest, res) => {
-  const summary = (req.body as { summary?: string }).summary
-  if (!summary || summary.trim().length < 3) return res.status(400).json({ error: 'summary (synthèse de clôture) obligatoire' })
+  const parsedClose = closeInput.safeParse(req.body ?? {})
+  if (!parsedClose.success) return res.status(400).json({ error: 'summary (synthèse de clôture) obligatoire' })
+  const summary = parsedClose.data.summary
   const { data: audit } = await supabaseAdmin.from('internal_audits').select('*').eq('tenant_id', req.user!.tenant_id!).eq('id', req.params.id).single()
   if (!audit) return res.status(404).json({ error: 'audit not found' })
   if (audit.status !== 'in_progress') return res.status(409).json({ error: `cannot close: status is ${audit.status}` })
@@ -158,10 +160,11 @@ router.post('/:id/close', requireAuth, requireTenant, requirePermission('interna
     })
   }
   const now = new Date().toISOString()
-  const { error } = await supabaseAdmin.from('internal_audits')
-    .update({ status: 'closed', closed_at: now, summary, updated_at: now }).eq('id', audit.id)
-  if (error) return res.status(400).json({ error: error.message })
-  auditLog(req, 'audit.close', audit.id)
+  const { data: closed, error } = await supabaseAdmin.from('internal_audits')
+    .update({ status: 'closed', closed_at: now, summary, updated_at: now }).eq('id', audit.id).eq('status', 'in_progress').select('id')
+  if (error) return dbFail(res, error, 'audits.close')
+  if (!closed?.length) return res.status(409).json({ error: "cannot close: l'audit a changé d'état" })
+  await auditLog(req, 'audit.close', audit.id)
   res.json({ audit: { ...audit, status: 'closed', closed_at: now, summary } })
 })
 
@@ -194,8 +197,8 @@ router.post('/:id/findings', requireAuth, requireTenant, requirePermission('inte
       process_owner_id: input.process_owner_id ?? null, created_by: req.user!.id,
     })
     .select().single()
-  if (error) return res.status(400).json({ error: error.message })
-  auditLog(req, 'audit.finding', finding.id, { audit_id: audit.id, classification: input.classification })
+  if (error) return dbFail(res, error, 'audits', 400)
+  await auditLog(req, 'audit.finding', finding.id, { audit_id: audit.id, classification: input.classification })
   void notifyUsers([input.process_owner_id], {
     tenantId: req.user!.tenant_id!,
     kind: 'audit.finding',
@@ -228,7 +231,7 @@ router.post('/findings/:id/respond', requireAuth, requireTenant, requirePermissi
     })
   }
   const now = new Date().toISOString()
-  const { error } = await supabaseAdmin.from('audit_findings').update({
+  const { data: responded, error } = await supabaseAdmin.from('audit_findings').update({
     response: parsed.data.response,
     corrective_action: parsed.data.corrective_action ?? finding.corrective_action,
     due_at: parsed.data.due_at ?? finding.due_at,
@@ -236,9 +239,10 @@ router.post('/findings/:id/respond', requireAuth, requireTenant, requirePermissi
     responded_at: now,
     responded_by: req.user!.id,
     updated_at: now,
-  }).eq('id', finding.id)
-  if (error) return res.status(400).json({ error: error.message })
-  auditLog(req, 'audit.finding_respond', finding.id, { audit_id: finding.audit_id })
+  }).eq('id', finding.id).in('status', ['open', 'responded', 'reopened']).select('id')
+  if (error) return dbFail(res, error, 'audits.respond')
+  if (!responded?.length) return res.status(409).json({ error: 'cannot respond: le constat a changé d\'état' })
+  await auditLog(req, 'audit.finding_respond', finding.id, { audit_id: finding.audit_id })
   void notifyUsers([finding.created_by], {
     tenantId: req.user!.tenant_id!,
     kind: 'audit.finding_responded',
@@ -264,7 +268,7 @@ router.post('/findings/:id/verify', requireAuth, requireTenant, requirePermissio
   }
   const verifier = req.user!.id
   if (verifier === finding.responded_by || verifier === finding.process_owner_id) {
-    auditLog(req, 'audit.verify_blocked', finding.id, { verifier })
+    await auditLog(req, 'audit.verify_blocked', finding.id, { verifier })
     return res.status(400).json({
       error: 'vérification exigée par une personne DISTINCTE du répondant (§F.4) — réaffectation',
       code: 'ERR_SAME_PERSON_VERIFY',
@@ -272,15 +276,16 @@ router.post('/findings/:id/verify', requireAuth, requireTenant, requirePermissio
   }
   const now = new Date().toISOString()
   const status = parsed.data.effective ? 'verified_effective' : 'reopened'
-  const { error } = await supabaseAdmin.from('audit_findings').update({
+  const { data: verified, error } = await supabaseAdmin.from('audit_findings').update({
     status,
     verified_by: verifier,
     verified_at: now,
     verification_comment: parsed.data.comment ?? null,
     updated_at: now,
-  }).eq('id', finding.id)
-  if (error) return res.status(400).json({ error: error.message })
-  auditLog(req, parsed.data.effective ? 'audit.finding_verified' : 'audit.finding_reopened', finding.id)
+  }).eq('id', finding.id).in('status', ['responded', 'reopened']).select('id')
+  if (error) return dbFail(res, error, 'audits.verify')
+  if (!verified?.length) return res.status(409).json({ error: 'cannot verify: le constat a changé d\'état' })
+  await auditLog(req, parsed.data.effective ? 'audit.finding_verified' : 'audit.finding_reopened', finding.id)
   void notifyUsers([finding.responded_by, finding.process_owner_id], {
     tenantId: req.user!.tenant_id!,
     kind: parsed.data.effective ? 'audit.finding_verified' : 'audit.finding_reopened',

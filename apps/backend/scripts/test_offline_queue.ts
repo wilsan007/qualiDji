@@ -86,10 +86,14 @@ async function run() {
 
   console.log('\n— Plafond —')
   const q4 = new OfflineQueue(memStorage(), async () => {}, 3)
-  for (let i = 0; i < 5; i++) await q4.enqueue('step.submit', { i }, `k${i}`)
-  assert('plafond respecté (3 max, plus anciens évacués)', (await q4.size()) === 3)
+  let refused = 0
+  for (let i = 0; i < 5; i++) {
+    try { await q4.enqueue('step.submit', { i }, `k${i}`) } catch { refused++ }
+  }
+  assert('plafond respecté (3 max)', (await q4.size()) === 3)
+  assert('2 saisies refusées explicitement (M9 : plus d éviction silencieuse)', refused === 2)
   const keys = (await q4.list()).map((m) => m.idempotency_key).join(',')
-  assert('ce sont les plus récents qui restent', keys === 'k2,k3,k4')
+  assert('les plus anciennes sont conservées', keys === 'k0,k1,k2')
 
   console.log(`\nRésultat offline : ${passed} réussis, ${failed} échec(s).`)
   if (failed > 0) process.exit(1)

@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '../middleware/auth'
 import { supabaseAdmin } from '../lib/supabase'
+import { dbFail } from '../lib/http'
 import { writeAudit } from '../lib/audit'
 import { canSeeAction, canSeeAllActions } from '../lib/access'
 import {
@@ -235,7 +236,7 @@ router.get('/', requireAuth, requireTenant, requirePermission('evidence.read'), 
     .eq('action_id', action.id)
     .eq('tenant_id', req.user!.tenant_id!)
     .order('captured_at', { ascending: false })
-  if (error) return res.status(400).json({ error: error.message })
+  if (error) return dbFail(res, error, 'evidence', 400)
   res.json({ evidence: (data ?? []).map(publicEvidence) })
 })
 
@@ -290,7 +291,7 @@ router.delete('/:id', requireAuth, requireTenant, requirePermission('capa.close'
   if (!ev) return res.status(404).json({ error: 'evidence not found' })
 
   const { error } = await supabaseAdmin.from('evidence').delete().eq('id', ev.id).eq('tenant_id', tenantId)
-  if (error) return res.status(400).json({ error: error.message })
+  if (error) return dbFail(res, error, 'evidence', 400)
   if (ev.storage_path) {
     const { error: rmErr } = await supabaseAdmin.storage.from(BUCKET).remove([ev.storage_path])
     if (rmErr) console.error('[evidence] suppression du fichier impossible:', rmErr.message)

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useParams, Link } from 'react-router-dom'
 import { actionsApi, stepsApi } from '@/lib/api'
 import { WorkflowStep } from '@/components/WorkflowStep'
 import { AIGuidancePanel } from '@/components/AIGuidancePanel'
@@ -82,7 +82,6 @@ function ExceptionModal({ open, onClose, onConfirm, saving }: {
 
 export default function WorkflowExecution() {
   const { actionId } = useParams()
-  const navigate = useNavigate()
   const [action, setAction] = useState<Action | null>(null)
   const [steps, setSteps] = useState<WStep[]>([])
   const [values, setValues] = useState<Record<string, any>>({})

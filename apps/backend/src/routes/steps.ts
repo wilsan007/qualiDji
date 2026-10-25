@@ -3,13 +3,14 @@ import type { Router as ExpressRouter } from 'express'
 import { z } from 'zod'
 import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '../middleware/auth'
 import { supabaseAdmin } from '../lib/supabase'
+import { dbFail } from '../lib/http'
 import { writeAudit } from '../lib/audit'
 import { validateStepValue } from '../lib/stepValidation'
 
 const router: ExpressRouter = Router()
 
 const submitStepSchema = z.object({
-  value: z.any(),
+  value: z.any().optional(),
 })
 
 const PLATFORM_ADMINS = ['super_admin', 'technical_admin']
@@ -85,7 +86,7 @@ router.post('/:actionId/steps/:stepId/submit', requireAuth, requireTenant, requi
     .select()
     .single()
 
-  if (error) return res.status(400).json({ error: error.message })
+  if (error) return dbFail(res, error, 'steps', 400)
 
   await writeAudit({
     tenantId: user.tenant_id!,

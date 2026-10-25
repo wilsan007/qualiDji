@@ -10,7 +10,7 @@
 # Env :    API_URL     défaut http://localhost:4000/api/v1
 #          AUTH_URL    défaut http://127.0.0.1:54341/auth/v1
 #          ANON_KEY    défaut : extraite de apps/backend/.env
-#          RBAC_QM_EMAIL / RBAC_OP_EMAIL / RBAC_PASSWORD (défaut Qualidji!RBAC2026)
+#          RBAC_QM_EMAIL / RBAC_OP_EMAIL / RBAC_PASSWORD (obligatoire, même valeur que E2E_PASSWORD du provisionnement)
 # Retour : 0 si tous les checks passent.
 # ============================================================================
 set -u
@@ -20,7 +20,11 @@ AUTH_URL="${AUTH_URL:-http://127.0.0.1:54341/auth/v1}"
 RBAC_QM_EMAIL="${RBAC_QM_EMAIL:-rbac.test@qualidji.fr}"
 RBAC_OP_EMAIL="${RBAC_OP_EMAIL:-operator.test@qualidji.fr}"
 RBAC_TA_EMAIL="${RBAC_TA_EMAIL:-ta.test@qualidji.fr}"
-RBAC_PASSWORD="${RBAC_PASSWORD:-Qualidji!RBAC2026}"
+RBAC_PASSWORD="${RBAC_PASSWORD:-${E2E_PASSWORD:-}}"
+if [ -z "$RBAC_PASSWORD" ]; then
+  echo "ERREUR : RBAC_PASSWORD (ou E2E_PASSWORD) requis — le mot de passe des comptes de recette n'est plus dans le dépôt" >&2
+  exit 1
+fi
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -z "${ANON_KEY:-}" ]; then
@@ -190,6 +194,21 @@ check 'OP GET /matrix/requirements → 200'                      200        "$OP
 check 'OP GET /matrix/na-register → 200'                       200        "$OP_TOKEN"  GET /matrix/na-register
 check 'QM GET /matrix/coverage → 200'                          200        "$QM_TOKEN"  GET /matrix/coverage
 
+echo "-- K.4 : non-applicabilité (demande justifiée, approbation par personne distincte, H3) --"
+NA_REQ=ISO9001-2026-4.4
+check 'QM PATCH matrice avec na_approved_by → 400 (saisie libre interdite)'  400       "$QM_TOKEN"  PATCH "/matrix/requirements/$NA_REQ" '{"reason":"E2E saisie libre interdite","applicability":"not_applicable","na_justification":"Hors perimetre organisation (E2E)","na_approved_by":"Marie Dupont, RQ"}'
+grep -q 'na_approved_by' "$BODY_FILE" && { PASS=$((PASS + 1)); echo "  ✓ … le champ refusé est nommé dans l erreur (PATCH → POST /na-approve)"; } || { FAIL=$((FAIL + 1)); echo "  ✗ … erreur sans mention de na_approved_by"; }
+check 'QM PATCH matrice : NA sans justification → 400'          400       "$QM_TOKEN"  PATCH "/matrix/requirements/$NA_REQ" '{"reason":"E2E NA sans justification","applicability":"not_applicable"}'
+grep -q 'ERR_NA_JUSTIFICATION_REQUIRED' "$BODY_FILE" && { PASS=$((PASS + 1)); echo "  ✓ … code ERR_NA_JUSTIFICATION_REQUIRED"; } || { FAIL=$((FAIL + 1)); echo "  ✗ … code ERR_NA_JUSTIFICATION_REQUIRED absent"; }
+check 'QM demande la non-applicabilité (justification motivée) → 200' 200       "$QM_TOKEN"  PATCH "/matrix/requirements/$NA_REQ" '{"reason":"E2E demande non-applicabilite","applicability":"not_applicable","na_justification":"Exigence hors perimetre de l organisation (E2E)"}'
+check 'QM approuve sa propre demande → 403 ségrégation des tâches'  403       "$QM_TOKEN"  POST "/matrix/requirements/$NA_REQ/na-approve" '{}'
+grep -q 'ERR_SEGREGATION_OF_DUTIES' "$BODY_FILE" && { PASS=$((PASS + 1)); echo "  ✓ … code ERR_SEGREGATION_OF_DUTIES (demandeur ≠ approbateur, K.4)"; } || { FAIL=$((FAIL + 1)); echo "  ✗ … code ERR_SEGREGATION_OF_DUTIES absent"; }
+check 'TA approuve la non-applicabilité → 200 (nom/fonction posés par le serveur)' 200       "$TA_TOKEN"  POST "/matrix/requirements/$NA_REQ/na-approve" '{}'
+check 'TA ré-approuve → 409 déjà approuvée'                    409       "$TA_TOKEN"  POST "/matrix/requirements/$NA_REQ/na-approve" '{}'
+grep -q 'ERR_NA_ALREADY_APPROVED' "$BODY_FILE" && { PASS=$((PASS + 1)); echo "  ✓ … code ERR_NA_ALREADY_APPROVED"; } || { FAIL=$((FAIL + 1)); echo "  ✗ … code ERR_NA_ALREADY_APPROVED absent"; }
+NA_REG=$(curl -s -m 20 "$API_URL/matrix/na-register" -H "Authorization: Bearer $QM_TOKEN" | python3 -c "import sys,json;r=[x for x in json.load(sys.stdin).get('register',[]) if x['requirement_id']=='$NA_REQ'];print('oui' if r and r[0].get('justification') and r[0].get('approved_by') and r[0].get('approved_by')!='Marie Dupont, RQ' else 'non')" 2>/dev/null)
+expect_eq "registre N.10 : justification + approbateur (posé par le serveur, jamais saisi)" "$NA_REG" oui
+
 echo "-- tenant.read (migration 0007) --"
 check 'OP GET /tenants/me → 200 tenant.read'                   200        "$OP_TOKEN"  GET /tenants/me
 check 'QM GET /tenants/me → 200'                               200        "$QM_TOKEN"  GET /tenants/me
@@ -217,6 +236,8 @@ fi
 check 'OP PUT /workflows/<wf> → 403 workflow.edit_draft'  403       "$OP_TOKEN"  PUT "/workflows/$WF_CODE" "$WF_BODY"
 check 'OP POST /workflows/<wf>/submit → 403'              403       "$OP_TOKEN"  POST "/workflows/$WF_CODE/submit" '{}'
 check 'QM POST /workflows/<wf>/submit → 200 in_review'    200       "$QM_TOKEN"  POST "/workflows/$WF_CODE/submit" '{}'
+check 'QM approuve son propre workflow → 403 ségrégation des tâches' 403 "$QM_TOKEN" POST "/workflows/$WF_CODE/approve" '{}'
+grep -q 'ERR_SEGREGATION_OF_DUTIES' "$BODY_FILE" && { PASS=$((PASS + 1)); echo "  ✓ … code ERR_SEGREGATION_OF_DUTIES (H3 : l approbateur n est ni l auteur, ni le soumetteur, ni un contributeur)"; } || { FAIL=$((FAIL + 1)); echo "  ✗ … code ERR_SEGREGATION_OF_DUTIES absent"; }
 check 'OP POST /workflows/<wf>/approve → 403'             403       "$OP_TOKEN"  POST "/workflows/$WF_CODE/approve" '{}'
 # Séparation des tâches (§6.3) : le workflow créé par QM est approuvé par le TA —
 # l'approbateur different notifie le créateur (pas d'auto-notification).
@@ -381,6 +402,8 @@ fi
 check 'OP GET /documents/<draft> → 403 (masqué)'           403       "$OP_TOKEN"  GET "/documents/$DOC_ID"
 check 'QM PUT draft → 200'                                 200       "$QM_TOKEN"  PUT "/documents/$DOC_ID" "$DOC_BODY"
 check 'QM submit → 200 in_review'                          200       "$QM_TOKEN"  POST "/documents/$DOC_ID/submit" '{}'
+check 'QM approuve son propre document (soumetteur) → 403 ségrégation des tâches'  403 "$QM_TOKEN" POST "/documents/$DOC_ID/approve" '{}'
+grep -q 'ERR_SEGREGATION_OF_DUTIES' "$BODY_FILE" && { PASS=$((PASS + 1)); echo "  ✓ … code ERR_SEGREGATION_OF_DUTIES (H3, fonction document_approve en base)"; } || { FAIL=$((FAIL + 1)); echo "  ✗ … code ERR_SEGREGATION_OF_DUTIES absent"; }
 check 'OP approve → 403 document.approve'                  403       "$OP_TOKEN"  POST "/documents/$DOC_ID/approve" '{}'
 check 'TA approve → 200 published'                         200       "$TA_TOKEN"  POST "/documents/$DOC_ID/approve" '{}'
 CODE=$(curl -s -m 20 "$API_URL/documents" -H "Authorization: Bearer $OP_TOKEN" | python3 -c "import sys,json;print('oui' if any(d['doc_key']=='$DOC_KEY' for d in json.load(sys.stdin).get('documents',[])) else 'non')" 2>/dev/null)
@@ -404,7 +427,7 @@ else
   FAIL=$((FAIL + 1)); echo "  ✗ V2 introuvable (include_all)"
 fi
 check 'TA deprecate V1 → 200'                              200       "$TA_TOKEN"  POST "/documents/$DOC_ID/deprecate" '{"change_reason":"E2E clôture"}'
-check 'TA DELETE V1 déprécié → 204'                        204       "$TA_TOKEN"  DELETE "/documents/$DOC_ID" '{}'
+check 'TA DELETE V1 déprécié → 409 (H2, jamais supprimé)'  409       "$TA_TOKEN"  DELETE "/documents/$DOC_ID" '{}'
 
 echo "-- §9.2/§9.3 Audits internes + revues de direction --"
 check 'OP GET /audits → 200 (répondant)'                    200       "$OP_TOKEN"  GET /audits
@@ -639,6 +662,89 @@ AUDITS="$(curl -s -m 20 "$API_URL/audit-log" -H "Authorization: Bearer $QM_TOKEN
 for k in action.create action.assign action.start step.submit action.submit action.reject action.approve action.approve_blocked action.exception evidence.upload evidence.record evidence.download evidence.delete; do
   case ",$AUDITS," in *",$k,"*) PASS=$((PASS + 1)); echo "  ✓ journal d'audit : $k" ;; *) FAIL=$((FAIL + 1)); echo "  ✗ journal d'audit : $k absent | $AUDITS" ;; esac
 done
+
+# --- Durcissement en BASE (H2/H4/M7, migration 0019) ---------------------------
+# Ces checks écrivent DIRECTEMENT via PostgREST avec la clé service_role : ils
+# prouvent que les contraintes tiennent même en contournant Express (défense en
+# profondeur). Ils ne doivent tourner que contre une pile portant le durcissement :
+# EXPECT_HARDENED_DB=1 (CI locale). Contre un projet réel dépourvu des migrations,
+# une écriture directe réussirait et le check échouerait bruyamment — le drapeau
+# explicite évite d'écrire par mégarde dans un projet non durci.
+if [ "${EXPECT_HARDENED_DB:-}" = "1" ] && [ -n "${SUPABASE_URL:-}" ] && [ -n "${SUPABASE_SERVICE_ROLE_KEY:-}" ]; then
+  echo "-- Durcissement base : journal en ajout seul (H4), version unique publiée (H2), scellé des revues (M7) --"
+  REST="$SUPABASE_URL/rest/v1"
+  SRV=(-H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" -H 'Content-Type: application/json')
+
+  # H4 — audit_log : ni UPDATE ni DELETE, même avec la clé service_role
+  AUDIT_ROW=$(curl -s -m 20 "$REST/audit_log?select=id&limit=1" "${SRV[@]}" | python3 -c 'import sys,json;print(next(iter(json.load(sys.stdin)),{}).get("id",""))' 2>/dev/null)
+  if [ -n "$AUDIT_ROW" ]; then
+    CODE=$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X PATCH "$REST/audit_log?id=eq.$AUDIT_ROW" "${SRV[@]}" -d '{"payload":{"falsifie":true}}')
+    case "$CODE" in 2*) FAIL=$((FAIL + 1)); echo "  ✗ UPDATE audit_log → $CODE (journal MODIFIABLE avec la clé service !)" ;; *) PASS=$((PASS + 1)); echo "  ✓ UPDATE audit_log refusé ($CODE) : ajout seul (H4)";; esac
+    CODE=$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X DELETE "$REST/audit_log?id=eq.$AUDIT_ROW" "${SRV[@]}")
+    case "$CODE" in 2*) FAIL=$((FAIL + 1)); echo "  ✗ DELETE audit_log → $CODE (journal SUPPRIMABLE avec la clé service !)" ;; *) PASS=$((PASS + 1)); echo "  ✓ DELETE audit_log refusé ($CODE) : ajout seul (H4)";; esac
+  else
+    FAIL=$((FAIL + 1)); echo "  ✗ aucune ligne d audit lisible via PostgREST (check H4 impossible)"
+  fi
+
+  # H4 — ai_interventions : journal IA non modifiable ; evidence : enregistrement immuable
+  AI_ROW=$(curl -s -m 20 "$REST/ai_interventions?select=id&limit=1" "${SRV[@]}" | python3 -c 'import sys,json;print(next(iter(json.load(sys.stdin)),{}).get("id",""))' 2>/dev/null)
+  if [ -n "$AI_ROW" ]; then
+    CODE=$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X PATCH "$REST/ai_interventions?id=eq.$AI_ROW" "${SRV[@]}" -d '{"result_status":"ok"}')
+    case "$CODE" in 2*) FAIL=$((FAIL + 1)); echo "  ✗ UPDATE ai_interventions → $CODE (journal IA modifiable !)" ;; *) PASS=$((PASS + 1)); echo "  ✓ UPDATE ai_interventions refusé ($CODE) : ajout seul (H4)";; esac
+  else
+    echo "  ○ UPDATE ai_interventions : aucune ligne (journal IA vide à ce stade)"
+  fi
+  if [ -n "${EV1:-}" ]; then
+    CODE=$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X PATCH "$REST/evidence?id=eq.$EV1" "${SRV[@]}" -d '{"value":{"falsifie":true}}')
+    case "$CODE" in 2*) FAIL=$((FAIL + 1)); echo "  ✗ UPDATE evidence → $CODE (preuve réinscriptible !)" ;; *) PASS=$((PASS + 1)); echo "  ✓ UPDATE evidence refusé ($CODE) : enregistrement immuable (H4)";; esac
+  fi
+
+  # H2 — une seule version PUBLIÉE par (tenant, doc_key), même en écriture directe
+  SEAL_KEY="E2E_SEAL_DOC_$(date +%s)"
+  SEAL_BODY="{\"doc_key\":\"$SEAL_KEY\",\"title\":\"Procedure scelle E2E\",\"doc_type\":\"procedure\",\"classification\":\"internal\",\"excerpt\":\"Controle final selon la procedure QC-01; anomalie declenche une non-conformite.\"}"
+  check 'QM POST /documents (doc scellé) → 201'                       201       "$QM_TOKEN"  POST /documents "$SEAL_BODY"
+  SEAL_ID=$(pyget document.id)
+  check 'QM submit du doc scellé → 200'                                200       "$QM_TOKEN"  POST "/documents/$SEAL_ID/submit" '{}'
+  check 'TA approve du doc scellé → 200 published'                     200       "$TA_TOKEN"  POST "/documents/$SEAL_ID/approve" '{}'
+  SEAL_TENANT=$(curl -s -m 20 "$REST/documents?id=eq.$SEAL_ID&select=tenant_id" "${SRV[@]}" | python3 -c 'import sys,json;print(next(iter(json.load(sys.stdin)),{}).get("tenant_id",""))' 2>/dev/null)
+  CODE=$(curl -s -m 20 -o "$BODY_FILE" -w '%{http_code}' -X POST "$REST/documents" "${SRV[@]}" -d "{\"tenant_id\":\"$SEAL_TENANT\",\"doc_key\":\"$SEAL_KEY\",\"title\":\"Doublon publie E2E\",\"version\":2,\"status\":\"published\"}")
+  case "$CODE" in 409) PASS=$((PASS + 1)); echo "  ✓ seconde version publiée en écriture directe → 409 (index unique H2)" ;; *) FAIL=$((FAIL + 1)); echo "  ✗ doublon publié accepté → $CODE | $(head -c 120 "$BODY_FILE")";; esac
+
+  # M7 — scellé des entrées de revue : une valeur modifiée hors API invalide la tenue
+  check 'QM POST /reviews (revue scellée) → 201'                       201       "$QM_TOKEN"  POST /reviews '{"title":"E2E Revue scellee"}'
+  RV2_ID=$(pyget review.id)
+  check 'QM prefill de la revue scellée → 200 (entrées consolidées)'   200       "$QM_TOKEN"  POST "/reviews/$RV2_ID/prefill" '{}'
+  CODE=$(curl -s -m 20 -o "$BODY_FILE" -w '%{http_code}' -X PATCH "$REST/management_reviews?id=eq.$RV2_ID" "${SRV[@]}" -d '{"inputs":{"e2e":"falsifie"}}')
+  if [ "$CODE" = 200 ]; then
+    check 'QM hold après falsification des entrées → 409'              409       "$QM_TOKEN"  POST "/reviews/$RV2_ID/hold" '{}'
+    grep -q 'ERR_INPUTS_TAMPERED' "$BODY_FILE" && { PASS=$((PASS + 1)); echo "  ✓ … code ERR_INPUTS_TAMPERED (scellé sha256, M7)"; } || { FAIL=$((FAIL + 1)); echo "  ✗ … code ERR_INPUTS_TAMPERED absent"; }
+  else
+    FAIL=$((FAIL + 1)); echo "  ✗ falsification directe des entrées → $CODE (attendu 200 : l écriture reste possible, c est le scellé qui doit détecter)"
+  fi
+else
+  echo "-- Durcissement base : ○ ignoré (EXPECT_HARDENED_DB / SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY non définis) --"
+fi
+
+# --- H7 : quota IA (429 au-delà de la limite utilisateur/heure) ------------------
+if [ -n "${AI_QUOTA_USER_PER_HOUR:-}" ]; then
+  QUOTA="${AI_QUOTA_USER_PER_HOUR}"
+  QI=0; QGOT=""
+  while [ "$QI" -lt $((QUOTA + 4)) ]; do
+    QI=$((QI + 1))
+    QCODE=$(curl -s -m 20 -o "$BODY_FILE" -w '%{http_code}' -X POST "$API_URL/ai/guidance" \
+      -H "Authorization: Bearer $OP_TOKEN" -H 'Content-Type: application/json' \
+      -d '{"actionId":"ACT_CTX_001","context":{"e2e":"quota"}}')
+    [ "$QCODE" = "429" ] && { QGOT=429; break; }
+    [ "$QCODE" != "200" ] && break
+  done
+  if [ "$QGOT" = "429" ] && grep -q 'ERR_AI_QUOTA' "$BODY_FILE"; then
+    PASS=$((PASS + 1)); echo "  ✓ quota IA : 429 ERR_AI_QUOTA au bout de $QI appels (limite $QUOTA/h, comptée en base)"
+  else
+    FAIL=$((FAIL + 1)); echo "  ✗ quota IA non atteint ($QI appels, dernier code $QCODE) | $(head -c 120 "$BODY_FILE")"
+  fi
+else
+  echo "-- H7 quota IA : ○ ignoré (AI_QUOTA_USER_PER_HOUR non défini côté script) --"
+fi
 
 echo "-- session : GET /me (permissions pour le gating frontend) --"
 check 'OP GET /me → 200 avec permissions'                      200        "$OP_TOKEN"  GET /me

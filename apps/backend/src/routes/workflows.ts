@@ -6,6 +6,8 @@ import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '..
 import { supabaseAdmin } from '../lib/supabase'
 import { notifyByRoles, notifyUsers } from '../lib/notify'
 import { isSupportedGuardrail, isSupportedValidationRule } from '../lib/stepValidation'
+import { auditFromReq } from '../lib/audit'
+import { dbFail } from '../lib/http'
 
 /**
  * Module B — Bibliothèque de workflows (V5 §5.2 / §6.1 / §6.3).
@@ -103,16 +105,21 @@ function canSeeDrafts(req: AuthedRequest): boolean {
 }
 
 function audit(req: AuthedRequest, action: string, entityId: string, payload: Record<string, unknown> = {}) {
-  const user = req.user
-  if (!user?.tenant_id) return
-  void supabaseAdmin.from('audit_log').insert({
-    tenant_id: user.tenant_id,
-    actor_id: user.id,
-    action,
-    entity: 'workflow_definition',
-    entity_id: entityId,
-    payload,
-  })
+  return auditFromReq(req, action, 'workflow_definition', entityId, payload)
+}
+
+const uniq = (ids: (string | null | undefined)[]) => Array.from(new Set(ids.filter(Boolean) as string[]))
+
+/** Transition conditionnelle : renvoie null si le workflow n'est plus dans l'état source (double clic, course). */
+async function transition(id: string, from: string, patch: Record<string, unknown>) {
+  const { data, error } = await supabaseAdmin
+    .from('workflow_definitions')
+    .update(patch)
+    .eq('id', id)
+    .eq('status', from)
+    .select()
+    .maybeSingle()
+  return { row: data, error }
 }
 
 /** Charge une définition + ses actions/étapes, avec la règle de visibilité des brouillons. */
@@ -199,7 +206,7 @@ router.get('/', requireAuth, requireTenant, requirePermission('workflow.read'), 
     ? query.or(`and(tenant_id.is.null,status.eq.published),tenant_id.eq.${tid}`)
     : query.eq('status', 'published').or(scope(tid))
   const { data, error } = await query
-  if (error) return res.status(500).json({ error: error.message })
+  if (error) return dbFail(res, error, 'workflows.list', 500)
   res.json({ workflows: data ?? [] })
 })
 
@@ -210,42 +217,14 @@ router.get('/:id', requireAuth, requireTenant, requirePermission('workflow.read'
   res.json(detail)
 })
 
-// ── Insertion des actions/étapes d'un workflow (création & duplication) ─────
-async function insertChildren(code: string, actions: z.infer<typeof actionInput>[]): Promise<string | null> {
-  for (let ai = 0; ai < actions.length; ai++) {
-    const a = actions[ai]
-    const actionId = `${code}__A${ai + 1}`
-    const { error: aErr } = await supabaseAdmin.from('workflow_actions').insert({
-      id: actionId,
-      workflow_id: code,
-      title: a.title,
-      objective: a.objective,
-      assigned_role: a.assigned_role,
-      sort_order: a.sort_order || ai + 1,
-    })
-    if (aErr) return aErr.message
-    const { error: sErr } = await supabaseAdmin.from('workflow_steps').insert(
-      a.steps.map((s, si) => ({
-        id: `${actionId}__S${si + 1}`,
-        action_id: actionId,
-        sequence: s.sequence,
-        title: s.title,
-        instruction: s.instruction,
-        step_type: s.step_type,
-        required: s.required,
-        validation_rule: s.validation_rule ?? null,
-        evidence_requirement: s.evidence_requirement,
-        approver_role: s.approver_role ?? null,
-        segregation_of_duties: s.segregation_of_duties,
-        ai_guidance_enabled: s.ai_guidance_enabled,
-        ai_prompt_template: s.ai_prompt_template ?? null,
-        guardrails: s.guardrails,
-        choices: s.choices ?? null,
-      }))
-    )
-    if (sErr) return sErr.message
-  }
-  return null
+// ── Insertion des actions/étapes d'un brouillon (création, édition, duplication) ─
+// Une seule transaction côté base (workflow_replace_children, migration 0019) : un échec ne
+// laisse jamais un brouillon vide ou à moitié reconstruit.
+async function insertChildren(code: string, actions: unknown[]): Promise<{ message: string; stale?: boolean } | null> {
+  const { error } = await supabaseAdmin.rpc('workflow_replace_children', { p_workflow: code, p_actions: actions })
+  if (!error) return null
+  console.error('[workflows] workflow_replace_children:', error.message)
+  return { message: error.message, stale: error.message.includes('ERR_BAD_STATE') }
 }
 
 // ── Création d'un brouillon ─────────────────────────────────────────────────
@@ -275,18 +254,19 @@ router.post('/', requireAuth, requireTenant, requirePermission('workflow.create'
     frequency: input.frequency,
     is_active: false,
     status: 'draft',
-    created_by: req.user?.id ?? null,
+    created_by: req.user!.id,
+    contributor_ids: [req.user!.id],
     updated_at: new Date().toISOString(),
   })
-  if (wfErr) return res.status(400).json({ error: wfErr.message })
+  if (wfErr) return dbFail(res, wfErr, 'workflows.create')
 
   const childErr = await insertChildren(code, input.actions)
   if (childErr) {
     await supabaseAdmin.from('workflow_definitions').delete().eq('id', code)
-    return res.status(400).json({ error: childErr })
+    return dbFail(res, { message: childErr.message }, 'workflows.create.children')
   }
 
-  audit(req, 'workflow.create', code, { name: input.name, actions: input.actions.length })
+  await audit(req, 'workflow.create', code, { name: input.name, actions: input.actions.length })
   const detail = await loadWorkflow(code, req, res)
   if (detail) res.status(201).json(detail)
 })
@@ -304,30 +284,27 @@ router.put('/:id', requireAuth, requireTenant, requirePermission('workflow.edit_
     return res.status(409).json({ error: "workflow is not editable — dupliquez-le pour créer une nouvelle version (V5 §5.2)" })
   }
 
-  const { error: updErr } = await supabaseAdmin
-    .from('workflow_definitions')
-    .update({
-      name: input.name,
-      standard_clause: input.standard_clause,
-      owner_role: input.owner_role,
-      frequency: input.frequency,
-      updated_by: req.user?.id ?? null,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', wf.id)
-  if (updErr) return res.status(400).json({ error: updErr.message })
-
-  // Remplacement intégral des actions/étapes (un draft n'a jamais d'instances)
-  const { data: oldActs } = await supabaseAdmin.from('workflow_actions').select('id').eq('workflow_id', wf.id)
-  const oldActionIds = (oldActs ?? []).map((a) => a.id)
-  if (oldActionIds.length) await supabaseAdmin.from('workflow_steps').delete().in('action_id', oldActionIds)
-  const { error: delErr } = await supabaseAdmin.from('workflow_actions').delete().eq('workflow_id', wf.id)
-  if (delErr) return res.status(400).json({ error: delErr.message })
-
+  // Remplacement intégral des actions/étapes en UNE transaction (un draft n'a jamais d'instances) :
+  // en cas d'échec, l'ancien contenu est conservé.
   const childErr = await insertChildren(wf.id, input.actions)
-  if (childErr) return res.status(400).json({ error: childErr })
+  if (childErr) {
+    if (childErr.stale) return res.status(409).json({ error: "le workflow a changé d'état pendant l'édition" })
+    return dbFail(res, { message: childErr.message }, 'workflows.update.children')
+  }
 
-  audit(req, 'workflow.update_draft', wf.id, { name: input.name })
+  const { row, error: updErr } = await transition(wf.id, 'draft', {
+    name: input.name,
+    standard_clause: input.standard_clause,
+    owner_role: input.owner_role,
+    frequency: input.frequency,
+    contributor_ids: uniq([...(wf.contributor_ids ?? []), req.user!.id]),
+    updated_by: req.user!.id,
+    updated_at: new Date().toISOString(),
+  })
+  if (updErr) return dbFail(res, updErr, 'workflows.update')
+  if (!row) return res.status(409).json({ error: "le workflow a changé d'état pendant l'édition" })
+
+  await audit(req, 'workflow.update_draft', wf.id, { name: input.name })
   const detail = await loadWorkflow(wf.id, req, res)
   if (detail) res.json(detail)
 })
@@ -344,12 +321,16 @@ router.post('/:id/submit', requireAuth, requireTenant, requirePermission('workfl
     .eq('workflow_id', wf.id)
   if (!count) return res.status(409).json({ error: 'workflow has no actions — impossible à soumettre' })
 
-  const { error } = await supabaseAdmin
-    .from('workflow_definitions')
-    .update({ status: 'in_review', updated_at: new Date().toISOString(), updated_by: req.user?.id ?? null })
-    .eq('id', wf.id)
-  if (error) return res.status(400).json({ error: error.message })
-  audit(req, 'workflow.submit', wf.id)
+  const { row, error } = await transition(wf.id, 'draft', {
+    status: 'in_review',
+    submitted_by: req.user!.id,
+    contributor_ids: uniq([...(wf.contributor_ids ?? []), req.user!.id]),
+    updated_at: new Date().toISOString(),
+    updated_by: req.user!.id,
+  })
+  if (error) return dbFail(res, error, 'workflows.submit')
+  if (!row) return res.status(409).json({ error: "cannot submit: le workflow a changé d'état" })
+  await audit(req, 'workflow.submit', wf.id)
   // Module G : revue requise — prévient les admins du tenant (§5.7)
   void notifyByRoles(['tenant_admin'], {
     tenantId: req.user!.tenant_id!,
@@ -362,30 +343,39 @@ router.post('/:id/submit', requireAuth, requireTenant, requirePermission('workfl
     entityId: wf.id,
     excludeUserIds: [req.user?.id],
   })
-  res.json({ workflow: { ...wf, status: 'in_review' } })
+  res.json({ workflow: row })
 })
+
+/** H3 — séparation des tâches : l'approbateur n'est ni l'auteur, ni un contributeur, ni le soumetteur. */
+export function violatesSegregation(wf: { created_by?: string | null; submitted_by?: string | null; contributor_ids?: string[] | null }, userId: string): boolean {
+  return wf.created_by === userId || wf.submitted_by === userId || (wf.contributor_ids ?? []).includes(userId)
+}
 
 // ── Approbation : in_review → published ─────────────────────────────────────
 router.post('/:id/approve', requireAuth, requireTenant, requirePermission('workflow.approve'), async (req: AuthedRequest, res) => {
   const wf = await loadOwnWorkflow(req.params.id, req, res)
   if (!wf) return
   if (wf.status !== 'in_review') return res.status(409).json({ error: `cannot approve: status is ${wf.status}` })
+  if (violatesSegregation(wf, req.user!.id)) {
+    return res.status(403).json({
+      error: "séparation des tâches : l'approbateur ne peut pas être l'auteur, un contributeur ou le soumetteur du workflow",
+      code: 'ERR_SEGREGATION_OF_DUTIES',
+    })
+  }
 
   const now = new Date().toISOString()
-  const { error } = await supabaseAdmin
-    .from('workflow_definitions')
-    .update({
-      status: 'published',
-      is_active: true,
-      approved_by: req.user?.id ?? null,
-      approved_at: now,
-      effective_from: now,
-      updated_at: now,
-      updated_by: req.user?.id ?? null,
-    })
-    .eq('id', wf.id)
-  if (error) return res.status(400).json({ error: error.message })
-  audit(req, 'workflow.approve', wf.id)
+  const { row, error } = await transition(wf.id, 'in_review', {
+    status: 'published',
+    is_active: true,
+    approved_by: req.user!.id,
+    approved_at: now,
+    effective_from: now,
+    updated_at: now,
+    updated_by: req.user!.id,
+  })
+  if (error) return dbFail(res, error, 'workflows.approve')
+  if (!row) return res.status(409).json({ error: "cannot approve: le workflow a changé d'état" })
+  await audit(req, 'workflow.approve', wf.id, { approved_version: wf.version })
   // Module G : publication — prévient le créateur (§5.7)
   void notifyUsers([wf.created_by], {
     tenantId: req.user!.tenant_id!,
@@ -397,7 +387,7 @@ router.post('/:id/approve', requireAuth, requireTenant, requirePermission('workf
     entityId: wf.id,
     excludeUserIds: [req.user?.id],
   })
-  res.json({ workflow: { ...wf, status: 'published', is_active: true } })
+  res.json({ workflow: row })
 })
 
 // ── Rejet : in_review → draft (motif obligatoire) ───────────────────────────
@@ -408,17 +398,15 @@ router.post('/:id/reject', requireAuth, requireTenant, requirePermission('workfl
   if (!wf) return
   if (wf.status !== 'in_review') return res.status(409).json({ error: `cannot reject: status is ${wf.status}` })
 
-  const { error } = await supabaseAdmin
-    .from('workflow_definitions')
-    .update({
-      status: 'draft',
-      review_comment: parsed.data.comment,
-      updated_at: new Date().toISOString(),
-      updated_by: req.user?.id ?? null,
-    })
-    .eq('id', wf.id)
-  if (error) return res.status(400).json({ error: error.message })
-  audit(req, 'workflow.reject', wf.id, { comment: parsed.data.comment })
+  const { row, error } = await transition(wf.id, 'in_review', {
+    status: 'draft',
+    review_comment: parsed.data.comment,
+    updated_at: new Date().toISOString(),
+    updated_by: req.user!.id,
+  })
+  if (error) return dbFail(res, error, 'workflows.reject')
+  if (!row) return res.status(409).json({ error: "cannot reject: le workflow a changé d'état" })
+  await audit(req, 'workflow.reject', wf.id, { comment: parsed.data.comment })
   // Module G : rejet — prévient le créateur avec le motif (§5.7)
   void notifyUsers([wf.created_by], {
     tenantId: req.user!.tenant_id!,
@@ -431,7 +419,7 @@ router.post('/:id/reject', requireAuth, requireTenant, requirePermission('workfl
     entityId: wf.id,
     excludeUserIds: [req.user?.id],
   })
-  res.json({ workflow: { ...wf, status: 'draft' } })
+  res.json({ workflow: row })
 })
 
 // ── Duplication versionnée (la seule façon de modifier un publié, §5.2) ────
@@ -459,17 +447,18 @@ router.post('/:id/duplicate', requireAuth, requireTenant, requirePermission('wor
     is_active: false,
     status: 'draft',
     change_reason: parsed.data.change_reason,
-    created_by: req.user?.id ?? null,
+    created_by: req.user!.id,
+    contributor_ids: [req.user!.id],
   })
-  if (wfErr) return res.status(400).json({ error: wfErr.message })
+  if (wfErr) return dbFail(res, wfErr, 'workflows.duplicate')
 
-  const childErr = await insertChildren(newCode, actions as any)
+  const childErr = await insertChildren(newCode, actions)
   if (childErr) {
     await supabaseAdmin.from('workflow_definitions').delete().eq('id', newCode)
-    return res.status(400).json({ error: childErr })
+    return dbFail(res, { message: childErr.message }, 'workflows.duplicate.children')
   }
 
-  audit(req, 'workflow.duplicate', newCode, { from: source.id, change_reason: parsed.data.change_reason })
+  await audit(req, 'workflow.duplicate', newCode, { from: source.id, change_reason: parsed.data.change_reason })
   const newDetail = await loadWorkflow(newCode, req, res)
   if (newDetail) res.status(201).json(newDetail)
 })
@@ -482,19 +471,17 @@ router.post('/:id/deprecate', requireAuth, requireTenant, requirePermission('wor
   if (!wf) return
   if (wf.status === 'deprecated') return res.status(409).json({ error: 'workflow déjà déprécié' })
 
-  const { error } = await supabaseAdmin
-    .from('workflow_definitions')
-    .update({
-      status: 'deprecated',
-      is_active: false,
-      change_reason: parsed.data.change_reason,
-      updated_at: new Date().toISOString(),
-      updated_by: req.user?.id ?? null,
-    })
-    .eq('id', wf.id)
-  if (error) return res.status(400).json({ error: error.message })
-  audit(req, 'workflow.deprecate', wf.id, { change_reason: parsed.data.change_reason })
-  res.json({ workflow: { ...wf, status: 'deprecated', is_active: false } })
+  const { row, error } = await transition(wf.id, wf.status, {
+    status: 'deprecated',
+    is_active: false,
+    change_reason: parsed.data.change_reason,
+    updated_at: new Date().toISOString(),
+    updated_by: req.user!.id,
+  })
+  if (error) return dbFail(res, error, 'workflows.deprecate')
+  if (!row) return res.status(409).json({ error: "le workflow a changé d'état" })
+  await audit(req, 'workflow.deprecate', wf.id, { change_reason: parsed.data.change_reason })
+  res.json({ workflow: row })
 })
 
 // ── Suppression (draft/in_review/deprecated, jamais instancié) ──────────────
@@ -515,13 +502,13 @@ router.delete('/:id', requireAuth, requireTenant, requirePermission('workflow.ap
   const actionIds = (acts ?? []).map((a) => a.id)
   if (actionIds.length) {
     const { error: sErr } = await supabaseAdmin.from('workflow_steps').delete().in('action_id', actionIds)
-    if (sErr) return res.status(400).json({ error: sErr.message })
+    if (sErr) return dbFail(res, sErr, 'workflows.delete.steps')
   }
   const { error: aErr } = await supabaseAdmin.from('workflow_actions').delete().eq('workflow_id', wf.id)
-  if (aErr) return res.status(400).json({ error: aErr.message })
-  const { error } = await supabaseAdmin.from('workflow_definitions').delete().eq('id', wf.id)
-  if (error) return res.status(400).json({ error: error.message })
-  audit(req, 'workflow.delete', wf.id, { status: wf.status })
+  if (aErr) return dbFail(res, aErr, 'workflows.delete.actions')
+  const { error } = await supabaseAdmin.from('workflow_definitions').delete().eq('id', wf.id).in('status', ['draft', 'in_review', 'deprecated'])
+  if (error) return dbFail(res, error, 'workflows.delete')
+  await audit(req, 'workflow.delete', wf.id, { status: wf.status })
   res.status(204).end()
 })
 

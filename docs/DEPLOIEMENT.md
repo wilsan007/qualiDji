@@ -212,14 +212,13 @@ La sauvegarde de référence reste le dépôt git des migrations + l'archive
 | Supprimer les comptes de recette | `pnpm --filter @iso/backend cleanup:e2e` |
 | Archiver | `./scripts/db_backup.sh` |
 | Restaurer | `./scripts/db_restore.sh <archive>` |
-| Gérer les audits internes | `pnpm --filter @iso/backend audit:list` / `audit:create` / `audit:respond` / `audit:verify` |
-| Tenue de revue de direction | `pnpm --filter @iso/backend review:list` / `review:create` / `review:prefill` / `review:hold` |
+| Audits internes / revues de direction | Pas de commande dédiée : API `/api/v1/audits` et `/api/v1/reviews`, interface « Audits internes » et « Revues direction » |
 | Linter/typecheck | `pnpm -r lint && pnpm -r typecheck` |
 | Tests | `pnpm --filter @iso/backend test` / `pnpm --filter @iso/frontend test` |
 
 > **Audit interne (§9.2)** — Programme d'audits, constat (finding) avec réponse et vérification d'efficacité par personne distincte (§F.4). Flux : planifié → en cours → répondu → vérifié efficace ou réouvert.
 >
-> **Revue de direction (§9.3)** — Tenue conditionnelle exigeant entrées consolidées (depuis les données enregistrées §5.8) ET décisions. Statuts : brouillon → tenue → close. La tenue ne peut être effectuée que quand les deux conditions sont remplies.
+> **Revue de direction (§9.3)** — Tenue conditionnelle exigeant entrées consolidées (depuis les données enregistrées §5.8) ET décisions. Statuts : brouillon → tenue (il n'existe pas d'état « close » pour une revue). Les entrées sont consolidées par le serveur (`/prefill`) et scellées par empreinte ; la tenue les revérifie. La tenue ne peut être effectuée que quand les deux conditions sont remplies.
 
 ---
 
