@@ -112,7 +112,11 @@ export class HttpAIProvider implements AIProvider {
         }),
         signal: controller.signal,
       })
-      if (!res.ok) throw new Error(`provider HTTP ${res.status}`)
+      if (!res.ok) {
+        // Message d'erreur du fournisseur (ex. clé invalide, modèle inconnu, crédit épuisé) — jamais la clé
+        const detail = await res.json().then((b: any) => b?.error?.message ?? b?.error?.code ?? '').catch(() => '')
+        throw new Error(`provider HTTP ${res.status}${detail ? ` — ${String(detail).slice(0, 200)}` : ''}`)
+      }
       const data: any = await res.json()
       const text = data?.choices?.[0]?.message?.content
       if (typeof text !== 'string' || !text) throw new Error('provider: réponse vide')
@@ -165,8 +169,11 @@ export async function callProvider(req: AIGenerateRequest): Promise<{ result: AI
       const result = await provider.generate(req)
       if (http) breaker.recordSuccess()
       return { result, http }
-    } catch {
-      if (http) breaker.recordFailure()
+    } catch (e: any) {
+      if (http) {
+        breaker.recordFailure()
+        console.error(`[ai] appel fournisseur en échec (tentative ${i + 1}/${attempts}) :`, e?.name === 'AbortError' ? 'délai dépassé' : e?.message ?? e)
+      }
     }
   }
   return null
