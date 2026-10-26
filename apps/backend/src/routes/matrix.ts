@@ -1,7 +1,10 @@
 import { Router } from 'express'
 import type { Router as ExpressRouter } from 'express'
 import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '../middleware/auth'
+import { z } from 'zod'
 import { supabaseAdmin } from '../lib/supabase'
+import { writeAudit } from '../lib/audit'
+import { dbFail, parseBody } from '../lib/http'
 
 // ============================================================================
 // Matrice de traçabilité ISO 9001:2026 — Cahier des charges V4, annexes K & L
@@ -48,6 +51,11 @@ interface AssessmentRow {
   na_approved_at: string | null
   last_reason: string | null
   updated_at: string
+  /** Surcharges K.2 propres au tenant (le catalogue global n'est jamais modifié par un tenant). */
+  process_owner: string | null
+  software_control: string | null
+  objective_evidence: string | null
+  verification_method: string | null
 }
 
 interface TestRow {
@@ -130,9 +138,17 @@ async function loadMatrix(tenantId: string): Promise<{
   const lines = requirements.map((r) => {
     const assessment = assessByReq.get(r.id) ?? null
     const lineTests = testsByReq.get(r.id) ?? { positive: null, negative: null }
-    const state = computeState(r, assessment, lineTests, reservesPerimeters)
-    return {
+    // Valeur effective = surcharge du tenant sinon valeur du catalogue global
+    const eff: RequirementRow = {
       ...r,
+      process_owner: assessment?.process_owner ?? r.process_owner,
+      software_control: assessment?.software_control ?? r.software_control,
+      objective_evidence: assessment?.objective_evidence ?? r.objective_evidence,
+      verification_method: assessment?.verification_method ?? r.verification_method,
+    }
+    const state = computeState(eff, assessment, lineTests, reservesPerimeters)
+    return {
+      ...eff,
       workflow_codes: workflowsByReq.get(r.id) ?? [],
       assessment,
       tests: lineTests,
@@ -182,7 +198,11 @@ export function computeState(
     return {
       status: 'not_covered',
       blocking: true,
-      reasons: ['Non-applicabilité sans justification motivée ni approbation (étape K.4)'],
+      reasons: [
+        assessment.na_justification
+          ? 'Non-applicabilité en attente d\'approbation par une personne distincte du demandeur (étape K.4)'
+          : 'Non-applicabilité sans justification motivée (étape K.4)',
+      ],
     }
   }
 
@@ -341,14 +361,7 @@ async function auditMatrix(
   entityId: string,
   payload: Record<string, unknown>
 ) {
-  await supabaseAdmin.from('audit_log').insert({
-    tenant_id: tenantId,
-    actor_id: actorId,
-    action,
-    entity: 'requirement',
-    entity_id: entityId,
-    payload,
-  })
+  await writeAudit({ tenantId, actorId, action, entity: 'requirement', entityId, payload })
 }
 
 const router: ExpressRouter = Router()
@@ -367,7 +380,7 @@ router.get('/requirements', requireAuth, requireTenant, requirePermission('workf
     res.json({ requirements: out })
   } catch (e: any) {
     console.error(e)
-    res.status(500).json({ error: e.message ?? 'Internal Server Error', code: 'ERR_INTERNAL' })
+    res.status(500).json({ error: 'erreur interne', code: 'ERR_INTERNAL' })
   }
 })
 
@@ -378,22 +391,25 @@ router.get('/coverage', requireAuth, requireTenant, requirePermission('workflow.
     res.json({ ...buildCoverage(lines), validations })
   } catch (e: any) {
     console.error(e)
-    res.status(500).json({ error: e.message ?? 'Internal Server Error', code: 'ERR_INTERNAL' })
+    res.status(500).json({ error: 'erreur interne', code: 'ERR_INTERNAL' })
   }
 })
 
-interface PatchBody {
-  reason?: string
-  applicability?: 'applicable' | 'not_applicable' | 'to_review'
-  na_justification?: string
-  na_approved_by?: string
-  process_owner?: string
-  objective_evidence?: string
-  software_control?: string
-  verification_method?: string
-}
+const K2_FIELDS = ['process_owner', 'objective_evidence', 'software_control', 'verification_method'] as const
 
-// Mise à jour d'une ligne: champs K.2 + applicabilité K.4 — motif obligatoire (L.5)
+const patchBody = z.object({
+  reason: z.string().trim().min(3, 'motif obligatoire (3 caractères min.)').max(1000),
+  applicability: z.enum(['applicable', 'not_applicable', 'to_review']).optional(),
+  na_justification: z.string().max(4000).optional(),
+  process_owner: z.string().max(300).optional(),
+  objective_evidence: z.string().max(2000).optional(),
+  software_control: z.string().max(2000).optional(),
+  verification_method: z.string().max(2000).optional(),
+  // L'approbation d'une non-applicabilité n'est plus une saisie libre (H3) : voir POST …/na-approve.
+  na_approved_by: z.undefined({ error: "na_approved_by n'est plus accepté : l'approbation passe par POST /matrix/requirements/:id/na-approve" }).optional(),
+})
+
+// Mise à jour d'une ligne: champs K.2 + demande de non-applicabilité K.4 — motif obligatoire (L.5)
 router.patch(
   '/requirements/:id',
   requireAuth,
@@ -402,18 +418,9 @@ router.patch(
   async (req: AuthedRequest, res) => {
   const tenantId = req.user!.tenant_id!
   const { id } = req.params
-  const body = req.body as PatchBody
-
-  const reason = (body.reason ?? '').trim()
-  if (reason.length < 3) {
-    return res.status(400).json({
-      error: 'Le motif de modification est obligatoire (traçabilité L.5).',
-      code: 'ERR_REASON_REQUIRED',
-    })
-  }
-  if (body.applicability && !['applicable', 'not_applicable', 'to_review'].includes(body.applicability)) {
-    return res.status(400).json({ error: 'Applicabilité invalide.', code: 'ERR_INVALID_INPUT' })
-  }
+  const body = parseBody(patchBody, req.body, res)
+  if (!body) return
+  const reason = body.reason
 
   const { data: reqRow } = await supabaseAdmin
     .from('requirements')
@@ -422,15 +429,12 @@ router.patch(
     .single()
   if (!reqRow) return res.status(404).json({ error: 'Exigence introuvable.', code: 'ERR_NOT_FOUND' })
 
-  // Champs de couverture du catalogue (étape K.2)
+  // Champs de couverture K.2 : SURCHARGES du tenant (requirement_assessments) — le catalogue global
+  // `requirements` n'est jamais écrit depuis l'API tenant (C5).
   const catalogPatch: Record<string, string> = {}
-  for (const field of ['process_owner', 'objective_evidence', 'software_control', 'verification_method'] as const) {
+  for (const field of K2_FIELDS) {
     const value = body[field]
     if (typeof value === 'string') catalogPatch[field] = value.trim()
-  }
-  if (Object.keys(catalogPatch).length > 0) {
-    const { error } = await supabaseAdmin.from('requirements').update(catalogPatch).eq('id', id)
-    if (error) return res.status(400).json({ error: error.message })
   }
 
   // Applicabilité / non-applicabilité (étape K.4)
@@ -443,41 +447,107 @@ router.patch(
 
   const applicability = body.applicability ?? existing?.applicability ?? 'applicable'
   const naJustification = (body.na_justification ?? existing?.na_justification ?? '').trim() || null
-  const naApprovedBy = (body.na_approved_by ?? existing?.na_approved_by ?? '').trim() || null
 
-  if (applicability === 'not_applicable' && (!naJustification || !naApprovedBy)) {
+  if (applicability === 'not_applicable' && !naJustification) {
     return res.status(400).json({
-      error:
-        'Une exigence non applicable doit porter une justification motivée et une approbation (nom et fonction) — étape K.4.',
+      error: 'Une exigence non applicable doit porter une justification motivée — étape K.4.',
       code: 'ERR_NA_JUSTIFICATION_REQUIRED',
     })
   }
 
+  // Toute nouvelle demande (changement d'applicabilité ou de justification) annule l'approbation
+  // précédente et fait du demandeur courant le « demandeur » : il ne pourra pas l'approuver (H3).
+  const naChanged =
+    applicability === 'not_applicable' &&
+    (existing?.applicability !== 'not_applicable' || (existing?.na_justification ?? null) !== naJustification)
+
   const now = new Date().toISOString()
+  const naFields =
+    applicability !== 'not_applicable'
+      ? { na_justification: null, na_approved_by: null, na_approved_at: null, na_requested_by: null, na_approved_user_id: null }
+      : naChanged
+        ? { na_justification: naJustification, na_approved_by: null, na_approved_at: null, na_requested_by: req.user!.id, na_approved_user_id: null }
+        : { na_justification: naJustification }
+
   const { error: upsertError } = await supabaseAdmin.from('requirement_assessments').upsert(
     {
       tenant_id: tenantId,
       requirement_id: id,
       applicability,
-      na_justification: applicability === 'not_applicable' ? naJustification : null,
-      na_approved_by: applicability === 'not_applicable' ? naApprovedBy : null,
-      na_approved_at: applicability === 'not_applicable' ? (existing?.na_approved_at ?? now) : null,
+      ...naFields,
       last_reason: reason,
       updated_by: req.user!.id,
       updated_at: now,
+      ...catalogPatch,
     },
     { onConflict: 'tenant_id,requirement_id' }
   )
-  if (upsertError) return res.status(400).json({ error: upsertError.message })
+  if (upsertError) return dbFail(res, upsertError, 'matrix.patch')
 
   await auditMatrix(tenantId, req.user!.id, 'matrix.requirement.update', id, {
     applicability,
     reason,
     catalog_fields: Object.keys(catalogPatch),
+    na_requested: naChanged,
   })
 
   const { lines } = await loadMatrix(tenantId)
   res.json({ requirement: lines.find((l) => l.id === id) ?? null })
+})
+
+// Approbation d'une non-applicabilité (K.4) — par une personne DISTINCTE du demandeur ; le nom et la
+// fonction de l'approbateur sont déterminés par le serveur (jamais saisis par le demandeur).
+router.post(
+  '/requirements/:id/na-approve',
+  requireAuth,
+  requireTenant,
+  requirePermission('workflow.approve'),
+  async (req: AuthedRequest, res) => {
+  const tenantId = req.user!.tenant_id!
+  const { id } = req.params
+  const { data: assessment } = await supabaseAdmin
+    .from('requirement_assessments')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .eq('requirement_id', id)
+    .maybeSingle()
+  if (!assessment) return res.status(404).json({ error: 'Exigence introuvable.', code: 'ERR_NOT_FOUND' })
+  if (assessment.applicability !== 'not_applicable' || !assessment.na_justification) {
+    return res.status(409).json({ error: "Aucune demande de non-applicabilité justifiée à approuver.", code: 'ERR_NA_NOT_REQUESTED' })
+  }
+  if (assessment.na_approved_at) {
+    return res.status(409).json({ error: 'Non-applicabilité déjà approuvée.', code: 'ERR_NA_ALREADY_APPROVED' })
+  }
+  if (assessment.na_requested_by === req.user!.id || assessment.updated_by === req.user!.id) {
+    return res.status(403).json({
+      error: "Séparation des tâches : l'approbateur doit être distinct du demandeur (K.4).",
+      code: 'ERR_SEGREGATION_OF_DUTIES',
+    })
+  }
+  const { data: profile } = await supabaseAdmin
+    .from('user_profiles').select('display_name, role').eq('id', req.user!.id).maybeSingle()
+  const approver = `${profile?.display_name || req.user!.email || req.user!.id} (${profile?.role ?? req.user!.role ?? 'rôle inconnu'})`
+
+  const now = new Date().toISOString()
+  const { data: updated, error } = await supabaseAdmin
+    .from('requirement_assessments')
+    .update({ na_approved_by: approver, na_approved_at: now, na_approved_user_id: req.user!.id, updated_at: now })
+    .eq('id', assessment.id)
+    .is('na_approved_at', null)
+    .select('id')
+  if (error) return dbFail(res, error, 'matrix.na-approve')
+  if (!updated?.length) return res.status(409).json({ error: 'Non-applicabilité déjà approuvée.', code: 'ERR_NA_ALREADY_APPROVED' })
+
+  await auditMatrix(tenantId, req.user!.id, 'matrix.requirement.na_approve', id, { requested_by: assessment.na_requested_by })
+  const { lines } = await loadMatrix(tenantId)
+  res.json({ requirement: lines.find((l) => l.id === id) ?? null })
+})
+
+const testBody = z.object({
+  kind: z.enum(['positive', 'negative']).default('positive'),
+  status: z.enum(['todo', 'passed', 'failed']),
+  notes: z.string().max(4000).optional(),
+  scenario: z.string().max(2000).optional(),
 })
 
 // Enregistre un test MT-<réf>-POS / MT-<réf>-NEG (étape K.3)
@@ -485,17 +555,17 @@ router.post(
   '/requirements/:id/tests',
   requireAuth,
   requireTenant,
-  requirePermission('evidence.upload'),
+  // H3 : l'enregistrement d'un test K.3 « passed » engage la couverture — réservé aux porteurs de
+  // workflow.edit_draft (qualité, responsables), plus à tout détenteur de evidence.upload (opérateurs).
+  requirePermission('workflow.edit_draft'),
   async (req: AuthedRequest, res) => {
   const tenantId = req.user!.tenant_id!
   const { id } = req.params
-  const body = req.body as { kind?: string; status?: string; notes?: string; scenario?: string }
+  const body = parseBody(testBody, req.body, res)
+  if (!body) return
 
-  const kind = body.kind === 'negative' ? 'negative' : 'positive'
-  const status = body.status ?? ''
-  if (!['todo', 'passed', 'failed'].includes(status)) {
-    return res.status(400).json({ error: 'Statut de test invalide.', code: 'ERR_INVALID_INPUT' })
-  }
+  const kind = body.kind
+  const status = body.status
 
   const { data: reqRow } = await supabaseAdmin
     .from('requirements')
@@ -503,6 +573,9 @@ router.post(
     .eq('id', id)
     .single()
   if (!reqRow) return res.status(404).json({ error: 'Exigence introuvable.', code: 'ERR_NOT_FOUND' })
+  const { data: override } = await supabaseAdmin
+    .from('requirement_assessments').select('verification_method').eq('tenant_id', tenantId).eq('requirement_id', id).maybeSingle()
+  const effectiveMethod = override?.verification_method ?? reqRow.verification_method
 
   const now = new Date().toISOString()
   const executed = status === 'todo' ? null : now
@@ -514,7 +587,7 @@ router.post(
         requirement_id: id,
         kind,
         code: `MT-${reqRow.source_ref}-${kind === 'positive' ? 'POS' : 'NEG'}`,
-        scenario: body.scenario ?? reqRow.verification_method,
+        scenario: body.scenario ?? effectiveMethod,
         status,
         notes: body.notes?.trim() || null,
         executed_by: executed ? req.user!.id : null,
@@ -525,7 +598,7 @@ router.post(
     )
     .select()
     .single()
-  if (error) return res.status(400).json({ error: error.message })
+  if (error) return dbFail(res, error, 'matrix.test')
 
   await auditMatrix(tenantId, req.user!.id, 'matrix.test.update', id, { kind, status })
 
@@ -555,7 +628,7 @@ router.get('/na-register', requireAuth, requireTenant, requirePermission('workfl
     res.json({ register })
   } catch (e: any) {
     console.error(e)
-    res.status(500).json({ error: e.message ?? 'Internal Server Error', code: 'ERR_INTERNAL' })
+    res.status(500).json({ error: 'erreur interne', code: 'ERR_INTERNAL' })
   }
 })
 
@@ -615,7 +688,7 @@ router.get('/export', requireAuth, requireTenant, requirePermission('evidence.ex
     res.send(csv)
   } catch (e: any) {
     console.error(e)
-    res.status(500).json({ error: e.message ?? 'Internal Server Error', code: 'ERR_INTERNAL' })
+    res.status(500).json({ error: 'erreur interne', code: 'ERR_INTERNAL' })
   }
 })
 
@@ -626,7 +699,7 @@ router.get('/validations', requireAuth, requireTenant, requirePermission('workfl
     res.json({ validations })
   } catch (e: any) {
     console.error(e)
-    res.status(500).json({ error: e.message ?? 'Internal Server Error', code: 'ERR_INTERNAL' })
+    res.status(500).json({ error: 'erreur interne', code: 'ERR_INTERNAL' })
   }
 })
 
@@ -637,7 +710,7 @@ router.post(
   requirePermission('workflow.approve'),
   async (req: AuthedRequest, res) => {
   const tenantId = req.user!.tenant_id!
-  const body = req.body as {
+  const body = (req.body ?? {}) as {
     matrix_version?: number
     perimeter?: string
     expert_name?: string
@@ -645,6 +718,9 @@ router.post(
     competency_justification?: string
     decision?: string
     reserves?: string
+  }
+  if (body.matrix_version !== undefined && !(Number.isInteger(Number(body.matrix_version)) && Number(body.matrix_version) >= 1)) {
+    return res.status(400).json({ error: 'Version de matrice invalide.', code: 'ERR_INVALID_INPUT' })
   }
 
   const decision = body.decision ?? ''
@@ -693,7 +769,7 @@ router.post(
     )
     .select()
     .single()
-  if (error) return res.status(400).json({ error: error.message })
+  if (error) return dbFail(res, error, 'matrix.validation')
 
   await auditMatrix(tenantId, req.user!.id, 'matrix.validation.record', perimeter, {
     decision,

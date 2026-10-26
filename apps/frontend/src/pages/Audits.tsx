@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { CheckCircle2, ClipboardList, Play, Plus, ShieldCheck, X } from 'lucide-react'
+import { CheckCircle2, ClipboardList, Play, Plus, ShieldCheck } from 'lucide-react'
 import { usePermissions } from '@/hooks/usePermissions'
 import { cn } from '@/lib/utils'
 import { auditsApi } from '@/lib/api'
+import { useAuthStore } from '@/stores/auth'
 
 /** §9.2 Audits internes — auto-audit interdit, constats immuables,
  * vérification par personne distincte, clôture après résolution. */
@@ -27,6 +28,9 @@ export default function Audits() {
   const { has } = usePermissions()
   const canManage = has('internal_audit.manage')
   const canRespond = has('internal_audit.respond')
+  const meId = useAuthStore((st) => st.user?.id)
+  /** Le constat se répond par son responsable de processus désigné (ou tout répondant s'il n'y en a pas). */
+  const mayRespond = (f: { process_owner_id?: string | null }) => canRespond && (!f.process_owner_id || f.process_owner_id === meId)
 
   const [audits, setAudits] = useState<any[]>([])
   const [eligible, setEligible] = useState<{ auditors: any[]; members: any[] }>({ auditors: [], members: [] })
@@ -256,7 +260,7 @@ export default function Audits() {
                     </p>
                   )}
                   <div className="flex flex-wrap gap-2">
-                    {canRespond && ['open', 'responded', 'reopened'].includes(f.status) && (
+                    {mayRespond(f) && ['open', 'responded', 'reopened'].includes(f.status) && (
                       respondFor === f.id ? (
                         <div className="w-full space-y-2 bg-amber-50 rounded p-2 border border-amber-200">
                           <textarea className={inputCls} rows={2} placeholder="Réponse factuelle (le constat d origine reste inchangé) *" value={respond.response} onChange={(e) => setRespond({ ...respond, response: e.target.value })} />

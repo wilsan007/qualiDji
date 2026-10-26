@@ -69,12 +69,14 @@ function LineEditor({
   line,
   canEdit,
   canTest,
+  canApprove,
   onClose,
   onSaved,
 }: {
   line: MatrixRequirement
   canEdit: boolean
   canTest: boolean
+  canApprove: boolean
   onClose: () => void
   onSaved: (updated: MatrixRequirement) => void
 }) {
@@ -82,7 +84,6 @@ function LineEditor({
     line.assessment?.applicability ?? 'applicable'
   )
   const [naJustification, setNaJustification] = useState(line.assessment?.na_justification ?? '')
-  const [naApprovedBy, setNaApprovedBy] = useState(line.assessment?.na_approved_by ?? '')
   const [processOwner, setProcessOwner] = useState(line.process_owner ?? '')
   const [objectiveEvidence, setObjectiveEvidence] = useState(line.objective_evidence ?? '')
   const [softwareControl, setSoftwareControl] = useState(line.software_control ?? '')
@@ -104,7 +105,6 @@ function LineEditor({
         reason: reason.trim(),
         applicability,
         na_justification: naJustification.trim() || undefined,
-        na_approved_by: naApprovedBy.trim() || undefined,
         process_owner: processOwner.trim(),
         objective_evidence: objectiveEvidence.trim(),
         software_control: softwareControl.trim(),
@@ -276,14 +276,40 @@ function LineEditor({
                   />
                 </div>
                 <div>
-                  <label className="label">Approuvée par (nom, fonction)</label>
-                  <input
-                    className="input"
-                    value={naApprovedBy}
-                    disabled={!canEdit}
-                    onChange={(e) => setNaApprovedBy(e.target.value)}
-                    placeholder="Marie Dupont, Responsable qualité"
-                  />
+                  <label className="label">Approbation (K.4)</label>
+                  {line.assessment?.na_approved_at ? (
+                    <p className="text-sm text-emerald-700">
+                      Approuvée par {line.assessment?.na_approved_by} — personne distincte du demandeur.
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      <p className="text-sm text-amber-700">
+                        En attente d’approbation par une personne distincte du demandeur (le nom est fixé par le serveur).
+                      </p>
+                      {canApprove && line.assessment?.applicability === 'not_applicable' && (
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          disabled={saving}
+                          onClick={async () => {
+                            setErr('')
+                            setSaving(true)
+                            try {
+                              const res = await matrixApi.approveNa(line.id)
+                              if (res?.requirement) onSaved(res.requirement)
+                              onClose()
+                            } catch (e) {
+                              setErr(errorMessage(e))
+                            } finally {
+                              setSaving(false)
+                            }
+                          }}
+                        >
+                          Approuver la non-applicabilité
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -372,7 +398,9 @@ function LineEditor({
 export default function Traceability() {
   const { has } = usePermissions()
   const canEdit = has('workflow.edit_draft')
-  const canTest = has('evidence.upload')
+  // H3 : l'enregistrement des tests K.3 exige workflow.edit_draft (plus evidence.upload)
+  const canTest = has('workflow.edit_draft')
+  const canApprove = has('workflow.approve')
   const canExport = has('evidence.export')
 
   const [loading, setLoading] = useState(true)
@@ -734,6 +762,7 @@ export default function Traceability() {
           line={selected}
           canEdit={canEdit}
           canTest={canTest}
+          canApprove={canApprove}
           onClose={() => setSelected(null)}
           onSaved={handleSaved}
         />

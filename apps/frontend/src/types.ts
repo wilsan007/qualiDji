@@ -12,6 +12,10 @@ export interface Action {
   due_at?: string
   started_at?: string
   submitted_at?: string
+  assigned_by?: string
+  reviewed_by?: string
+  reviewed_at?: string
+  review_comment?: string
   created_at: string
   workflow_definitions?: any
   workflow_actions?: any

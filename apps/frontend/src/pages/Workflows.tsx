@@ -434,7 +434,9 @@ function WorkflowRow({
   onDelete: () => void
 }) {
   const btn = 'p-1.5 rounded-md hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-transparent transition-colors'
-  const showDelete = ['draft', 'in_review', 'deprecated'].includes(wf.status) && canApprove
+  // Bibliothèque globale (tenant_id null) : lecture seule — seule la duplication vers le tenant est offerte
+  const isGlobal = wf.tenant_id == null
+  const showDelete = ['draft', 'in_review', 'deprecated'].includes(wf.status) && canApprove && !isGlobal
   const confirming = deleteConfirm === wf.id
 
   return (
@@ -444,6 +446,7 @@ function WorkflowRow({
           <button onClick={onToggle} className="flex items-center gap-1.5 font-mono text-xs text-slate-600 hover:text-blue-600">
             {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
             {wf.id}
+            {isGlobal && <span className="badge ml-1 bg-slate-100 text-slate-600" title="Bibliothèque globale : lecture seule, dupliquez-la pour l'adapter à votre tenant">global</span>}
           </button>
         </td>
         <td className="px-4 py-2.5 font-medium text-slate-800">{wf.name}</td>
@@ -453,7 +456,7 @@ function WorkflowRow({
         <td className="px-4 py-2.5"><StatusBadge status={wf.status} /></td>
         <td className="px-4 py-2.5">
           <div className="flex items-center justify-end gap-1">
-            {wf.status === 'draft' && canEditDraft && (
+            {wf.status === 'draft' && canEditDraft && !isGlobal && (
               <>
                 <button onClick={onEdit} disabled={busy} title="Éditer le brouillon" className={btn}>
                   <Pencil className="w-4 h-4 text-slate-500" />
@@ -463,7 +466,7 @@ function WorkflowRow({
                 </button>
               </>
             )}
-            {wf.status === 'in_review' && canApprove && (
+            {wf.status === 'in_review' && canApprove && !isGlobal && (
               <>
                 <button onClick={onApprove} disabled={busy} title="Approuver (publication)" className={btn}>
                   <CheckCircle2 className="w-4 h-4 text-emerald-600" />
@@ -478,7 +481,7 @@ function WorkflowRow({
                 <Copy className="w-4 h-4 text-slate-500" />
               </button>
             )}
-            {(wf.status === 'published' || wf.status === 'in_review') && canApprove && (
+            {(wf.status === 'published' || wf.status === 'in_review') && canApprove && !isGlobal && (
               <button onClick={onDeprecate} disabled={busy} title="Déprécier (motif requis)" className={btn}>
                 <Archive className="w-4 h-4 text-slate-500" />
               </button>

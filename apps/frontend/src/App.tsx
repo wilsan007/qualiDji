@@ -1,6 +1,7 @@
 import React, { ReactNode, useEffect } from 'react'
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/auth'
+import { usePermissions } from '@/hooks/usePermissions'
 import Login from '@/pages/Login'
 import Dashboard from '@/pages/Dashboard'
 import { installOfflineSync } from '@/lib/offline/db'
@@ -35,6 +36,16 @@ const RequireAuth: React.FC<{ children: ReactNode }> = ({ children }) => {
   return <>{children}</>
 }
 
+/** M10 : garde de route par permission — l'URL directe d'une page interdite renvoie au tableau de bord (le serveur reste l'autorité). */
+const RequirePermission: React.FC<{ any: string[]; children: ReactNode }> = ({ any, children }) => {
+  const { user, isLoading } = useAuthStore()
+  const { hasAny } = usePermissions()
+  if (isLoading) return <BootSplash />
+  if (!user) return <Navigate to="/login" replace />
+  if (!hasAny(...any)) return <Navigate to="/dashboard" replace />
+  return <>{children}</>
+}
+
 /** Redirige vers le tableau de bord si déjà connecté (sans navigate() pendant le render). */
 const RequireGuest: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { user, isLoading } = useAuthStore()
@@ -62,14 +73,14 @@ export default function App() {
           <Route path="workflow" element={<RequireAuth><WorkflowExecution /></RequireAuth>} />
           <Route path="workflow/:actionId" element={<RequireAuth><WorkflowExecution /></RequireAuth>} />
           <Route path="nc" element={<RequireAuth><NonConformities /></RequireAuth>} />
-          <Route path="audit" element={<RequireAuth><AuditReadiness /></RequireAuth>} />
+          <Route path="audit" element={<RequirePermission any={['audit.export']}><AuditReadiness /></RequirePermission>} />
           <Route path="matrice" element={<RequireAuth><Traceability /></RequireAuth>} />
-          <Route path="workflows" element={<RequireAuth><Workflows /></RequireAuth>} />
-          <Route path="users" element={<RequireAuth><Users /></RequireAuth>} />
-          <Route path="reports" element={<RequireAuth><Reports /></RequireAuth>} />
-          <Route path="documents" element={<RequireAuth><Documents /></RequireAuth>} />
-          <Route path="audits" element={<RequireAuth><Audits /></RequireAuth>} />
-          <Route path="reviews" element={<RequireAuth><Reviews /></RequireAuth>} />
+          <Route path="workflows" element={<RequirePermission any={['workflow.read']}><Workflows /></RequirePermission>} />
+          <Route path="users" element={<RequirePermission any={['user.manage']}><Users /></RequirePermission>} />
+          <Route path="reports" element={<RequirePermission any={['action.approve']}><Reports /></RequirePermission>} />
+          <Route path="documents" element={<RequirePermission any={['document.read']}><Documents /></RequirePermission>} />
+          <Route path="audits" element={<RequirePermission any={['internal_audit.manage', 'internal_audit.respond']}><Audits /></RequirePermission>} />
+          <Route path="reviews" element={<RequirePermission any={['management_review.manage']}><Reviews /></RequirePermission>} />
           {/* Toute route inconnue → tableau de bord (plus de pages blanches) */}
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Route>

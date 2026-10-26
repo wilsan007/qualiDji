@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express'
+import { createHash } from 'crypto'
 import { createSupabaseClient, supabaseAdmin } from '../lib/supabase'
 
 export interface AuthedRequest extends Request {
@@ -6,12 +7,44 @@ export interface AuthedRequest extends Request {
   permissions?: Set<string>
 }
 
-// Cache des permissions par rôle (évite de re-interroger la DB à chaque requête)
+// Cache des permissions par rôle (évite de re-interroger la DB à chaque requête).
+// M8 : TTL court (30 s par défaut, PERMISSIONS_CACHE_TTL_MS) — une modification de
+// role_permissions est effective en quelques secondes, plus en 5 minutes.
 const permissionCache = new Map<string, Set<string>>()
-const CACHE_TTL_MS = 5 * 60 * 1000
+const CACHE_TTL_MS = Number(process.env.PERMISSIONS_CACHE_TTL_MS ?? 30_000)
 const cacheTimestamps = new Map<string, number>()
 
-async function getPermissionsForRole(role: string): Promise<Set<string>> {
+/** Vide le cache des permissions (tests, ou après une modification de role_permissions). */
+export function invalidatePermissionCache(): void {
+  permissionCache.clear()
+  cacheTimestamps.clear()
+}
+
+// Cache d'authentification (M8) : requireAuth coûtait 2 appels réseau Supabase (getUser + profil)
+// par requête. Le résultat est gardé AUTH_CACHE_TTL_MS (10 s par défaut, 0 = désactivé), jamais
+// au-delà de l'expiration du jeton, et purgé immédiatement dans CE processus lors d'un changement
+// de rôle ou d'une suspension (invalidateAuthCache). Avec plusieurs instances, la révocation est
+// effective au plus tard après le TTL.
+interface AuthCacheEntry { user: NonNullable<AuthedRequest['user']>; userId: string; expires: number }
+const authCache = new Map<string, AuthCacheEntry>()
+const AUTH_CACHE_TTL_MS = Number(process.env.AUTH_CACHE_TTL_MS ?? 10_000)
+const AUTH_CACHE_MAX = 2000
+
+export function invalidateAuthCache(userId?: string): void {
+  if (!userId) { authCache.clear(); return }
+  for (const [key, entry] of authCache) if (entry.userId === userId) authCache.delete(key)
+}
+
+function tokenExpiryMs(token: string): number {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8'))
+    return typeof payload.exp === 'number' ? payload.exp * 1000 : 0
+  } catch {
+    return 0
+  }
+}
+
+export async function getPermissionsForRole(role: string): Promise<Set<string>> {
   const now = Date.now()
   const cached = permissionCache.get(role)
   const ts = cacheTimestamps.get(role)
@@ -56,30 +89,51 @@ export async function requireAuth(req: AuthedRequest, res: Response, next: NextF
     return res.status(401).json({ error: 'missing bearer token' })
   }
   const token = authHeader.slice(7)
-  const supabase = createSupabaseClient(token)
+  const cacheKey = createHash('sha256').update(token).digest('hex')
+  const hit = authCache.get(cacheKey)
+  let profileRole: string | undefined
+  if (hit && hit.expires > Date.now()) {
+    req.user = hit.user
+    profileRole = hit.user.role
+  } else {
+    authCache.delete(cacheKey)
+    const supabase = createSupabaseClient(token)
 
-  const { data, error } = await supabase.auth.getUser()
-  if (error || !data.user) {
-    return res.status(401).json({ error: 'invalid or expired token' })
-  }
+    const { data, error } = await supabase.auth.getUser()
+    if (error || !data.user) {
+      return res.status(401).json({ error: 'invalid or expired token' })
+    }
 
-  // Récupérer le profil tenant/role
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('tenant_id, role')
-    .eq('id', data.user.id)
-    .single()
+    // Récupérer le profil tenant/role
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('tenant_id, role')
+      .eq('id', data.user.id)
+      .single()
 
-  req.user = {
-    id: data.user.id,
-    email: data.user.email,
-    tenant_id: profile?.tenant_id ?? undefined,
-    role: profile?.role ?? undefined,
+    req.user = {
+      id: data.user.id,
+      email: data.user.email,
+      tenant_id: profile?.tenant_id ?? undefined,
+      role: profile?.role ?? undefined,
+    }
+    profileRole = profile?.role ?? undefined
+
+    const exp = tokenExpiryMs(token)
+    const expires = Math.min(Date.now() + AUTH_CACHE_TTL_MS, exp || Infinity)
+    if (AUTH_CACHE_TTL_MS > 0 && expires > Date.now()) {
+      if (authCache.size >= AUTH_CACHE_MAX) {
+        const now = Date.now()
+        for (const [k, v] of authCache) if (v.expires <= now) authCache.delete(k)
+        if (authCache.size >= AUTH_CACHE_MAX) authCache.clear()
+      }
+      authCache.set(cacheKey, { user: req.user, userId: data.user.id, expires })
+    }
   }
 
   // Pré-charger les permissions pour la suite du pipeline
-  if (profile?.role) {
-    req.permissions = await getPermissionsForRole(profile.role)
+  if (profileRole) {
+    req.permissions = await getPermissionsForRole(profileRole)
   } else {
     req.permissions = new Set()
   }

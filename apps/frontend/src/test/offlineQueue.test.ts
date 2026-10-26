@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { OfflineQueue, type PendingMutation, type QueueStorage } from '@/lib/offline/queue'
+import { OfflineQueue, OfflineQueueFullError, type PendingMutation, type QueueStorage } from '@/lib/offline/queue'
 
 /** Storage en mémoire (Map) : même contrat que la persistance Dexie navigateur. */
 function memoryStorage(initial: PendingMutation[] = []): QueueStorage & { items: PendingMutation[] } {
@@ -53,7 +53,7 @@ describe('§13 — file hors ligne (OfflineQueue)', () => {
     await queue.enqueue('step.submit', {}, 'c')
 
     const res = await queue.flush()
-    expect(res).toEqual({ sent: 3, failed: 0, remaining: 0 })
+    expect(res).toEqual({ sent: 3, failed: 0, remaining: 0, foreign: 0 })
     expect(sent).toEqual(['a', 'b', 'c'])
     expect(await queue.size()).toBe(0)
   })
@@ -89,13 +89,31 @@ describe('§13 — file hors ligne (OfflineQueue)', () => {
     expect(item.attempts).toBe(1)
   })
 
-  it('respecte la taille maximale de la file (50 par défaut)', async () => {
+  it('file pleine : la nouvelle saisie est REFUSÉE, aucune ancienne n\'est perdue (M9)', async () => {
     const storage = memoryStorage()
     const queue = new OfflineQueue(storage, async () => {}, 3)
-    for (const k of ['a', 'b', 'c', 'd']) await queue.enqueue('step.submit', {}, k)
+    for (const k of ['a', 'b', 'c']) await queue.enqueue('step.submit', {}, k)
+    await expect(queue.enqueue('step.submit', {}, 'd')).rejects.toBeInstanceOf(OfflineQueueFullError)
     const items = await queue.list()
-    expect(items).toHaveLength(3)
-    expect(items.map((i) => i.idempotency_key)).toEqual(['b', 'c', 'd'])
+    expect(items.map((i) => i.idempotency_key)).toEqual(['a', 'b', 'c'])
+    // remplacer une saisie existante (même clé) reste possible file pleine
+    await queue.enqueue('step.submit', { v: 2 }, 'b')
+    expect(await queue.size()).toBe(3)
+  })
+
+  it('M9 : les saisies d\'un autre compte ne sont jamais rejouées, et clear(user) ne purge que les siennes', async () => {
+    const storage = memoryStorage()
+    let current: string | null = 'u1'
+    const sent: string[] = []
+    const queue = new OfflineQueue(storage, async (m) => { sent.push(m.idempotency_key) }, 50, () => current)
+    await queue.enqueue('step.submit', {}, 'mine')
+    current = 'u2'
+    await queue.enqueue('step.submit', {}, 'theirs')
+    const res = await queue.flush()
+    expect(sent).toEqual(['theirs'])
+    expect(res.foreign).toBe(1)
+    await queue.clear('u1')
+    expect((await queue.list()).map((i) => i.idempotency_key)).toEqual([])
   })
 
   it('recharge la file depuis le storage (persistance après reload)', async () => {

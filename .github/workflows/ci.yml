@@ -24,11 +24,14 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      - name: Lint (backend + frontend)
+        run: pnpm -r lint
+
       - name: Typecheck (backend + frontend)
         run: pnpm -r typecheck
 
       # Tests unitaires offline : matrice, RBAC (13), contrôles IA (30), rate
-      # limiter (7), file hors ligne (13). Les tests n'exigent ni DB ni secret :
+      # limiter (7), file hors ligne (13), validation des étapes (34), fichiers de preuve (19), proxy (9). Les tests n'exigent ni DB ni secret :
       # des valeurs factices contournent le fail-fast de lib/supabase au chargement.
       - name: Tests unitaires backend
         run: pnpm --filter @iso/backend test
@@ -40,7 +43,24 @@ jobs:
       - name: Build frontend
         run: pnpm --filter @iso/frontend build
 
-      # Tests frontend (vitest + jsdom + @testing-library) : 60 tests covering
+      # Artefact déployé = apps/backend/dist (tsc avec émission). On vérifie qu'il est
+      # produit ET qu'il démarre : `node dist/server.js` est la commande de production.
+      - name: Build backend (dist) et démarrage de l'artefact
+        run: |
+          pnpm --filter @iso/backend build
+          test -f apps/backend/dist/server.js
+          (cd apps/backend && PORT=4100 node dist/server.js > /tmp/backend-dist.log 2>&1 &)
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:4100/health > /dev/null; then echo "artefact prêt (${i}s)"; exit 0; fi
+            sleep 1
+          done
+          echo "::error::l'artefact dist/server.js n'a pas démarré"; cat /tmp/backend-dist.log; exit 1
+        env:
+          SUPABASE_URL: http://localhost:54321
+          SUPABASE_ANON_KEY: ci-dummy-anon-key
+          SUPABASE_SERVICE_ROLE_KEY: ci-dummy-service-role-key
+
+      # Tests frontend (vitest + jsdom + @testing-library) : 78 tests covering
       # le gating par permissions, la file hors ligne, la couche API, les
       # composants Audits / Revues / Layout. Aucun réseau requis.
       - name: Tests unitaires frontend
@@ -83,15 +103,25 @@ jobs:
           echo "SUPABASE_URL=$SUPABASE_URL"
 
       # ── Provisionnement des comptes E2E (tenant + 4 rôles V5) ───────────
+      # H6 — le mot de passe des comptes de recette est généré à chaque run
+      # (plus aucun mot de passe en clair dans le dépôt) ; provisioning,
+      # suite E2E et smoke Playwright utilisent le même $E2E_PASSWORD.
+      - name: Générer le mot de passe des comptes E2E
+        run: |
+          PW="CI-$(openssl rand -hex 12)"
+          echo "E2E_PASSWORD=$PW" >> "$GITHUB_ENV"
+          echo "mot de passe E2E généré (${#PW} caractères)"
+
       - name: Provisionnement des comptes de test
         run: pnpm --filter @iso/backend exec tsx scripts/provision_e2e.ts
         env:
-          E2E_PASSWORD: Qualidji!RBAC2026
+          E2E_PASSWORD: ${{ env.E2E_PASSWORD }}
 
-      # ── Backend + suite E2E (103 checks) ────────────────────────────────
+      # ── Backend + suite E2E (293 checks) ────────────────────────────────
       - name: Démarrage du backend
         run: |
-          (cd apps/backend && npx tsx src/server.ts > /tmp/backend.log 2>&1 &)
+          # L'E2E teste l'artefact tel qu'il sera déployé (dist), pas le mode dev tsx.
+          (cd apps/backend && pnpm build && node dist/server.js > /tmp/backend.log 2>&1 &)
           for i in $(seq 1 30); do
             if curl -sf http://localhost:4000/health > /dev/null; then
               echo "backend prêt (${i}s)"; exit 0
@@ -106,14 +136,29 @@ jobs:
           CORS_ORIGIN: http://localhost:5174
           # Marge large : la suite E2E enchaîne ~100 appels depuis la même IP.
           RATE_LIMIT_API: 2000
+          # Taille max d'une preuve : 1 Mio en CI pour tester le refus 413 sans gros fichier.
+          EVIDENCE_MAX_BYTES: 1048576
+          # Quota IA resserré pour que la suite E2E puisse tester le 429 ERR_AI_QUOTA
+          # (limite par utilisateur/heure, comptée en base — voir routes/ai.ts).
+          AI_QUOTA_USER_PER_HOUR: 8
+          # Active les checks E2E « base durcie » (journal en ajout seul, scellé des
+          # revues, version unique publiée) qui écrivent directement via PostgREST
+          # avec la clé service_role : ils ne doivent PAS tourner contre un projet
+          # réel dépourvu des migrations de durcissement.
+          EXPECT_HARDENED_DB: 1
 
-      - name: Suite E2E (RBAC, modules B/G/H, IA, documents, audits)
+      - name: Suite E2E (RBAC, modules B/G/H, IA, documents, audits, durcissement)
         run: |
           cd apps/backend
           API_URL=http://localhost:4000/api/v1 \
-          AUTH_URL="$(grep '^API_URL=' /tmp/sb_env.txt | cut -d= -f2- | tr -d '"')/auth/v1" \
+          AUTH_URL="$SUPABASE_URL/auth/v1" \
           ANON_KEY="$SUPABASE_ANON_KEY" \
-          RBAC_PASSWORD=Qualidji!RBAC2026 \
+          SUPABASE_URL="$SUPABASE_URL" \
+          SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY" \
+          EXPECT_HARDENED_DB="$EXPECT_HARDENED_DB" \
+          AI_QUOTA_USER_PER_HOUR="$AI_QUOTA_USER_PER_HOUR" \
+          RBAC_PASSWORD="$E2E_PASSWORD" \
+          EVIDENCE_MAX_BYTES=1048576 \
           bash scripts/e2e_rbac.sh
 
       # ── Smoke test frontend (Playwright, Chromium) ──────────────────────
@@ -137,7 +182,7 @@ jobs:
         env:
           E2E_BASE_URL: http://localhost:5174
           E2E_EMAIL: operator.test@qualidji.fr
-          E2E_PASSWORD: Qualidji!RBAC2026
+          E2E_PASSWORD: ${{ env.E2E_PASSWORD }}
           CI: true
 
       - name: Journal du backend (en cas d'échec)

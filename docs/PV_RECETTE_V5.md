@@ -102,7 +102,7 @@ typecheck racine → 63 tests unitaires → build frontend. Aucune DB ni secret 
 | `ta.test@qualidji.fr` | tenant_admin (user.manage, workflow.approve) | local + distant |
 | `e2e.member@qualidji.fr` | reader (cible des tests §3.4) | local + distant |
 
-Mot de passe commun de test : `Qualidji!RBAC2026` (comptes de recette uniquement — à révoquer avant toute mise en production).
+Mot de passe des comptes de test : **plus en clair dans le dépôt** (H6) — il est fourni par la variable `E2E_PASSWORD` (générée par run en CI : voir `ci.yml`) et les comptes restent **à révoquer avant toute mise en production**. La valeur historique de recette, autrefois en clair, doit être considérée comme compromise et changée.
 
 ### §7 — Assistant IA encadré (critère de sortie P3)
 - Contrat JSON **§7.4 versionné** validé par schéma ; pipeline §7.3 complet ; **R1** étapes inventées retirées ; **R2** aucun seuil inventé (→ `missing_information`) ; **R3** source_refs vérifiées ; **R4/R10** jamais approuvé, aucune action automatique ; **R5** journal (modèle, version prompt sha256, hashes entrée/sortie, latence, résultat) ; **R6** fallback + circuit breaker ; **R7** corpus filtré serveur ; **R8** injection rejetée et journalisée.
