@@ -20,8 +20,8 @@ import { dbFail, parseBody } from '../lib/http'
 const CLAUSES = ['4', '5', '6', '7', '8', '9', '10'] as const
 const SPACES = ['C', 'P', 'AE'] as const
 
-type TestStatus = 'todo' | 'passed' | 'failed'
-type GapStatus =
+export type TestStatus = 'todo' | 'passed' | 'failed'
+export type GapStatus =
   | 'not_analyzed'
   | 'not_covered'
   | 'partially_covered'
@@ -30,7 +30,7 @@ type GapStatus =
   | 'accepted_with_reserve'
   | 'not_applicable_justified'
 
-interface RequirementRow {
+export interface RequirementRow {
   id: string
   clause: string
   title: string
@@ -43,7 +43,7 @@ interface RequirementRow {
   spaces: string[]
 }
 
-interface AssessmentRow {
+export interface AssessmentRow {
   requirement_id: string
   applicability: 'applicable' | 'not_applicable' | 'to_review'
   na_justification: string | null
@@ -58,7 +58,7 @@ interface AssessmentRow {
   verification_method: string | null
 }
 
-interface TestRow {
+export interface TestRow {
   requirement_id: string
   kind: 'positive' | 'negative'
   code: string
@@ -68,7 +68,7 @@ interface TestRow {
   executed_at: string | null
 }
 
-interface ValidationRow {
+export interface ValidationRow {
   id: string
   matrix_version: number
   perimeter: string
@@ -79,7 +79,7 @@ interface ValidationRow {
   decided_at: string
 }
 
-interface MatrixLine extends RequirementRow {
+export interface MatrixLine extends RequirementRow {
   workflow_codes: string[]
   assessment: AssessmentRow | null
   tests: { positive: TestRow | null; negative: TestRow | null }
@@ -89,7 +89,7 @@ interface MatrixLine extends RequirementRow {
 }
 
 /** Charge le catalogue + les données tenant et calcule l'état de chaque ligne. */
-async function loadMatrix(tenantId: string): Promise<{
+export async function loadMatrix(tenantId: string): Promise<{
   lines: MatrixLine[]
   validations: ValidationRow[]
 }> {

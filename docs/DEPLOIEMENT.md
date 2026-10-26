@@ -254,3 +254,91 @@ pnpm --filter @iso/frontend test:e2e           # smoke Playwright (3/3)
   configurable).
 - **Secrets** : jamais commités ; rotation mensuelle recommandée pour
   `SUPABASE_SERVICE_ROLE_KEY` et `JWT_SECRET`.
+
+---
+
+## 13. Brancher un fournisseur IA
+
+Sans fournisseur configuré, QualiDji fonctionne entièrement en **mode notice** :
+le guide « Que faire ici ? » (calculé par le serveur, sans IA) reste disponible sur
+chaque écran ; le bouton **Générer le guidage** d'une étape renvoie l'instruction
+de l'étape, et la question **Comment faire… ?** renvoie les extraits pertinents de
+la notice d'utilisation. Brancher un fournisseur rend ces deux réponses rédigées.
+
+### 13.1 Ce qui est envoyé au fournisseur
+
+| Appel | Contenu transmis | Jamais transmis |
+|---|---|---|
+| `POST /api/v1/ai/guidance` (étape d'action) | étapes du workflow publié, extraits des documents publiés non confidentiels, contexte saisi assaini | documents `confidential`/`secret`, brouillons, données d'un autre tenant |
+| `POST /api/v1/guide/ask` (Comment faire… ?) | rôle, écran, libellés du guide calculé, question, sections de la notice, extraits des documents publiés non confidentiels | question contenant un e-mail, un téléphone ou un IBAN (refusée avant envoi) |
+
+Garde-fous communs (`apps/backend/src/lib/aiGuard.ts`, `lib/guideAsk.ts`) : la question
+et les documents sont des données (détection d'injection R8, requête rejetée et
+journalisée), réponse validée contre un contrat JSON strict, sources inconnues retirées
+(R3), aucune action autonome (R10), quotas par utilisateur et par tenant, journal
+append-only dans `ai_interventions` (la question libre n'y est pas stockée en clair :
+empreinte SHA-256 et longueur seulement ; `ai_meta.kind = 'guide.ask'`).
+
+### 13.2 Variables
+
+Le backend parle à toute API **compatible OpenAI** (`POST {AI_PROVIDER_URL}/chat/completions`,
+en-tête `Authorization: Bearer`, `response_format: json_object`).
+
+| Variable | Secret ? | Rôle | Exemple |
+|---|---|---|---|
+| `AI_PROVIDER_URL` | non | URL de base de l'API | `https://api.openai.com/v1`, `https://api.mistral.ai/v1` |
+| `AI_API_KEY` | **oui** | clé du fournisseur | — (jamais dans le dépôt) |
+| `AI_MODEL` | non | modèle | `gpt-4o-mini` (défaut), `mistral-small-latest` |
+| `AI_TIMEOUT_MS` | non | délai max d'un appel (défaut 10000) | `15000` |
+| `AI_MAX_USER_CHARS` | non | taille max du contexte envoyé (défaut 6000) | `6000` |
+| `AI_QUOTA_USER_PER_HOUR` | non | demandes par utilisateur et par heure (défaut 30) | `30` |
+| `AI_QUOTA_TENANT_PER_DAY` | non | demandes par tenant et par jour (défaut 500) | `500` |
+
+Les deux variables `AI_PROVIDER_URL` **et** `AI_API_KEY` doivent être présentes pour
+activer le fournisseur. Un fournisseur qui ignore `response_format` doit malgré tout
+répondre en JSON : une réponse non conforme est rejetée et l'utilisateur reçoit le
+mode notice (signalé « mode standard » dans l'écran, `result_status = error` au journal).
+Vérifier que le fournisseur choisi n'utilise pas les requêtes pour l'entraînement et
+que sa localisation est compatible avec vos engagements clients (RGPD).
+
+### 13.3 En local
+
+Ajouter à `apps/backend/.env` (fichier ignoré par git) :
+
+```bash
+AI_PROVIDER_URL=https://api.openai.com/v1
+AI_API_KEY=<clé fournie par le responsable du compte>
+AI_MODEL=gpt-4o-mini
+```
+
+puis redémarrer le backend.
+
+### 13.4 Sur Cloudflare Workers
+
+La clé est un **secret** du Worker (chiffré, invisible dans le tableau de bord après
+saisie) ; l'URL et le modèle peuvent être des secrets ou des `vars` de `wrangler.jsonc`.
+Les secrets sont exposés à `process.env` grâce à `nodejs_compat`.
+
+```bash
+npx wrangler secret put AI_API_KEY          # la valeur est demandée au clavier, jamais dans l'historique
+npx wrangler secret put AI_PROVIDER_URL
+npx wrangler secret put AI_MODEL
+npx wrangler secret list                    # contrôle : les noms apparaissent, pas les valeurs
+```
+
+Un `wrangler secret put` crée une nouvelle version du Worker déployé : pas de
+redéploiement nécessaire. Pour couper l'IA : `npx wrangler secret delete AI_API_KEY`
+(retour immédiat au mode notice).
+
+### 13.5 Contrôle après branchement
+
+1. Se connecter, ouvrir n'importe quel écran, poser une question dans **Comment faire… ?** :
+   la réponse ne doit plus porter le bandeau « Réponse tirée de la notice ».
+2. `GET /api/v1/ai/interventions` (permission `audit.export`) : la dernière ligne a
+   `result_status = ok`, `model` = le modèle configuré, `degraded = false`.
+3. En cas de `error` ou `degraded`, consulter les journaux du Worker
+   (`npx wrangler tail`) : délai dépassé, clé refusée (HTTP 401) ou réponse non JSON.
+
+Ne jamais commiter de clé : `.env` est ignoré par git, et `wrangler.jsonc` ne doit
+contenir aucune valeur secrète.
+

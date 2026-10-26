@@ -28,10 +28,8 @@ const guidanceInput = z.object({
 /** Classifications autorisées à quitter la base vers le fournisseur IA (H2) : ni confidentiel, ni secret. */
 const AI_ALLOWED_CLASSIFICATIONS = ['public', 'internal']
 
-/** RAG (§7.6) : corpus = documents PUBLIÉS du tenant (filtrés serveur, R7) +
- * référentiel global (requirements liés à la clause). Seuls les documents
- * publiés, effectifs et NON confidentiels entrent — jamais d autre tenant, jamais de brouillon. */
-async function buildCorpus(tenantId: string, clause: string | null): Promise<CorpusSource[]> {
+/** Documents PUBLIÉS, effectifs et NON confidentiels du tenant (R7) — corpus partagé avec le guide (routes/guide.ts). */
+export async function publishedDocumentsCorpus(tenantId: string, limit = 5): Promise<CorpusSource[]> {
   const { data: docs } = await supabaseAdmin
     .from('documents')
     .select('id, doc_key, title, excerpt, version, effective_from')
@@ -39,8 +37,8 @@ async function buildCorpus(tenantId: string, clause: string | null): Promise<Cor
     .eq('status', 'published')
     .in('classification', AI_ALLOWED_CLASSIFICATIONS)
     .order('effective_from', { ascending: false })
-    .limit(5)
-  const docSources: CorpusSource[] = (docs ?? [])
+    .limit(limit)
+  return (docs ?? [])
     .filter((d) => !d.effective_from || new Date(d.effective_from) <= new Date())
     .map((d) => ({
       object_type: 'document',
@@ -49,6 +47,13 @@ async function buildCorpus(tenantId: string, clause: string | null): Promise<Cor
       excerpt: (d.excerpt ?? '').slice(0, 400),
       version: d.version,
     }))
+}
+
+/** RAG (§7.6) : corpus = documents PUBLIÉS du tenant (filtrés serveur, R7) +
+ * référentiel global (requirements liés à la clause). Seuls les documents
+ * publiés, effectifs et NON confidentiels entrent — jamais d autre tenant, jamais de brouillon. */
+async function buildCorpus(tenantId: string, clause: string | null): Promise<CorpusSource[]> {
+  const docSources = await publishedDocumentsCorpus(tenantId)
 
   const { data } = await supabaseAdmin
     .from('requirements')
@@ -68,8 +73,8 @@ async function buildCorpus(tenantId: string, clause: string | null): Promise<Cor
 }
 
 /** H7 — quotas (comptés en base : valables multi-instances et après redémarrage). */
-const QUOTA_USER_PER_HOUR = Number(process.env.AI_QUOTA_USER_PER_HOUR ?? 30)
-const QUOTA_TENANT_PER_DAY = Number(process.env.AI_QUOTA_TENANT_PER_DAY ?? 500)
+export const QUOTA_USER_PER_HOUR = Number(process.env.AI_QUOTA_USER_PER_HOUR ?? 30)
+export const QUOTA_TENANT_PER_DAY = Number(process.env.AI_QUOTA_TENANT_PER_DAY ?? 500)
 
 /**
  * Verdict de quota (pur, testé unitairement) : le quota UTILISATEUR (heure)
@@ -82,7 +87,7 @@ export function quotaVerdict(byUser: number, byTenant: number, userLimit = QUOTA
   return null
 }
 
-async function quotaExceeded(tenantId: string, userId: string): Promise<'user' | 'tenant' | null> {
+export async function quotaExceeded(tenantId: string, userId: string): Promise<'user' | 'tenant' | null> {
   const hourAgo = new Date(Date.now() - 3_600_000).toISOString()
   const dayAgo = new Date(Date.now() - 86_400_000).toISOString()
   const [byUser, byTenant] = await Promise.all([

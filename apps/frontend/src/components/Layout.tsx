@@ -8,6 +8,7 @@ import { notificationsApi, NotificationItem } from '@/lib/api'
 import { WifiOff } from 'lucide-react'
 import { roleLabel, spaceForRole } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { GuidePanel } from '@/components/GuidePanel'
 import type { LucideIcon } from 'lucide-react'
 
 interface NavItem {
@@ -336,6 +337,7 @@ export default function Layout() {
 
         <main className="flex-1 overflow-y-auto p-4 sm:p-6">
           <div className="animate-enter">
+            <GuidePanel />
             <Outlet />
           </div>
         </main>

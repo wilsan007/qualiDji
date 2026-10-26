@@ -82,6 +82,11 @@ export function severityLabel(severity: string): string {
 export function roleLabel(role?: string): string {
   const map: Record<string, string> = {
     admin: 'Administrateur',
+    super_admin: 'Super administrateur',
+    technical_admin: 'Administrateur technique',
+    tenant_admin: 'Administrateur tenant',
+    department_manager: 'Responsable de département',
+    reader: 'Lecteur',
     quality_manager: 'Responsable qualité',
     site_manager: 'Responsable de site',
     process_owner: 'Responsable de processus',

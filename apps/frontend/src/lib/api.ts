@@ -3,6 +3,8 @@
 import { supabase } from './supabase'
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:4000/api/v1'
+/** Événement émis après chaque écriture réussie (écouté par GuidePanel). */
+export const GUIDE_REFRESH_EVENT = 'qualidji:data-changed'
 
 async function getToken() {
   const { data } = await supabase.auth.getSession()
@@ -28,6 +30,11 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.error ?? `API error ${res.status}`)
+  }
+  // Une écriture réussie peut changer « ce qu'il faut faire » : le guide contextuel se recalcule.
+  const method = (options.method ?? 'GET').toUpperCase()
+  if (method !== 'GET' && !path.startsWith('/guide') && typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(GUIDE_REFRESH_EVENT))
   }
   if (res.status === 204) return null
   return res.json()
@@ -89,6 +96,50 @@ export const aiApi = {
     apiFetch('/ai/guidance', {
       method: 'POST',
       body: JSON.stringify({ actionId, stepId, context }),
+    }),
+}
+
+// Guide contextuel « Que faire ici ? » + question libre « Comment faire… ? »
+export interface GuideStep {
+  id: string
+  label: string
+  detail?: string
+  status: 'todo' | 'done' | 'info'
+  count?: number
+  link?: string
+}
+
+export interface GuideResponse {
+  guide: {
+    screen: string
+    role: string
+    title: string
+    purpose: string
+    steps: GuideStep[]
+    next: GuideStep | null
+    manual: string[]
+  }
+  role_label: string
+  manual: { id: string; title: string; text: string }[]
+}
+
+export interface GuideAnswer {
+  answer: string
+  steps: string[]
+  sources: { id: string; title: string; kind: 'notice' | 'document' }[]
+  warnings: string[]
+  confidence_label: 'low' | 'medium' | 'high'
+  degraded: boolean
+  model: string
+}
+
+export const guideApi = {
+  get: (screen: string, actionId?: string | null): Promise<GuideResponse> =>
+    apiFetch(`/guide?screen=${encodeURIComponent(screen)}${actionId ? `&actionId=${encodeURIComponent(actionId)}` : ''}`),
+  ask: (screen: string, question: string, actionId?: string | null): Promise<GuideAnswer> =>
+    apiFetch('/guide/ask', {
+      method: 'POST',
+      body: JSON.stringify({ screen, question, ...(actionId ? { actionId } : {}) }),
     }),
 }
 
