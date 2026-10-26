@@ -319,15 +319,23 @@ La clé est un **secret** du Worker (chiffré, invisible dans le tableau de bord
 saisie) ; l'URL et le modèle peuvent être des secrets ou des `vars` de `wrangler.jsonc`.
 Les secrets sont exposés à `process.env` grâce à `nodejs_compat`.
 
+**Fournisseur retenu : OpenAI.** `AI_PROVIDER_URL=https://api.openai.com/v1` et
+`AI_MODEL` sont déjà déclarés dans `vars` de `wrangler.jsonc` (valeurs non secrètes,
+déployées avec le Worker). Seule la clé reste à poser, par la personne qui détient le
+compte OpenAI :
+
 ```bash
 npx wrangler secret put AI_API_KEY          # la valeur est demandée au clavier, jamais dans l'historique
-npx wrangler secret put AI_PROVIDER_URL
-npx wrangler secret put AI_MODEL
-npx wrangler secret list                    # contrôle : les noms apparaissent, pas les valeurs
+npx wrangler secret list                    # contrôle : AI_API_KEY apparaît, pas sa valeur
 ```
 
-Un `wrangler secret put` crée une nouvelle version du Worker déployé : pas de
-redéploiement nécessaire. Pour couper l'IA : `npx wrangler secret delete AI_API_KEY`
+Pour changer de modèle, modifier `AI_MODEL` dans `wrangler.jsonc` puis redéployer
+(`pnpm deploy:cloudflare`), en vérifiant que le modèle est disponible sur le compte
+OpenAI et accepte `response_format: json_object`.
+
+Les `vars` ne sont prises en compte qu'au déploiement : déployer une fois cette version
+(`pnpm deploy:cloudflare`) avant ou après la pose de la clé. Ensuite, un `wrangler secret put`
+crée à lui seul une nouvelle version du Worker déployé : pas de redéploiement nécessaire. Pour couper l'IA : `npx wrangler secret delete AI_API_KEY`
 (retour immédiat au mode notice).
 
 ### 13.5 Contrôle après branchement
