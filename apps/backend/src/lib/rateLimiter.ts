@@ -51,9 +51,16 @@ export class RateLimiter {
 /** Middleware Express : 429 + Retry-After au-delà de la limite. */
 export function rateLimit(opts: { limit: number; windowMs: number }) {
   const limiter = new RateLimiter(opts.limit, opts.windowMs)
-  const sweeper = setInterval(() => limiter.sweep(), Math.max(30_000, opts.windowMs))
-  sweeper.unref?.()
+  // Nettoyage paresseux, déclenché par les requêtes : aucune minuterie au chargement du module
+  // (interdite dans la portée globale de Cloudflare Workers), même cadence que l'ancien setInterval.
+  const sweepEveryMs = Math.max(30_000, opts.windowMs)
+  let nextSweepAt = Date.now() + sweepEveryMs
   return (req: Request, res: Response, next: NextFunction) => {
+    const now = Date.now()
+    if (now >= nextSweepAt) {
+      limiter.sweep()
+      nextSweepAt = now + sweepEveryMs
+    }
     const key = req.ip ?? 'unknown'
     if (limiter.hit(key)) return next()
     res.setHeader('Retry-After', String(Math.ceil(limiter.retryAfterMs(key) / 1000)))

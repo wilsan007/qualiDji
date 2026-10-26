@@ -2,18 +2,24 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { actionsApi } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth'
+import { usePermissions } from '@/hooks/usePermissions'
 import { statusBadge, statusLabel, roleLabel, errorMessage } from '@/lib/format'
 import { Button } from '@/components/ui/Button'
 import { PageLoader, ErrorState, EmptyState } from '@/components/ui/States'
+import { NewActionModal } from '@/components/AssignAction'
 import type { Action } from '@/types'
-import { ArrowRight, ClipboardList, CheckCircle2, Loader2, AlertTriangle, Inbox } from 'lucide-react'
+import { ArrowRight, ClipboardList, CheckCircle2, Loader2, AlertTriangle, Inbox, Plus } from 'lucide-react'
 
 export default function Dashboard() {
   const navigate = useNavigate()
   const { user } = useAuthStore()
+  // Lancer une action = action.assign (QM, Admin, responsables de site/département, consultant)
+  const { has } = usePermissions()
+  const canAssign = has('action.assign')
   const [actions, setActions] = useState<Action[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [newOpen, setNewOpen] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -60,6 +66,7 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
+      {canAssign && <NewActionModal open={newOpen} onClose={() => setNewOpen(false)} onCreated={load} />}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="page-title">Tableau de bord</h1>
@@ -67,12 +74,19 @@ export default function Dashboard() {
             Bonjour {user?.display_name || user?.email} — {roleLabel(user?.role)}
           </p>
         </div>
-        <Link
-          to="/workflow"
-          className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium transition-colors shadow-sm"
-        >
-          Ouvrir mes actions <ArrowRight className="w-4 h-4" />
-        </Link>
+        <div className="flex flex-wrap items-center gap-2">
+          {canAssign && (
+            <Button variant="outline" onClick={() => setNewOpen(true)}>
+              <Plus className="w-4 h-4" /> Nouvelle action
+            </Button>
+          )}
+          <Link
+            to="/workflow"
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium transition-colors shadow-sm"
+          >
+            Ouvrir mes actions <ArrowRight className="w-4 h-4" />
+          </Link>
+        </div>
       </div>
 
       {/* KPI */}

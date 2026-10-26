@@ -4,6 +4,7 @@ import { actionsApi, stepsApi } from '@/lib/api'
 import { WorkflowStep } from '@/components/WorkflowStep'
 import { AIGuidancePanel } from '@/components/AIGuidancePanel'
 import { EvidenceUploader } from '@/components/EvidenceUploader'
+import { ReassignControl } from '@/components/AssignAction'
 import { Button } from '@/components/ui/Button'
 import { usePermissions } from '@/hooks/usePermissions'
 import { PageLoader, ErrorState } from '@/components/ui/States'
@@ -213,6 +214,8 @@ export default function WorkflowExecution() {
   }
 
   const canEdit = action.status === 'assigned' || action.status === 'in_progress'
+  // Réassignation (action.assign) : mêmes statuts que le serveur (EXECUTABLE + blocked)
+  const canReassign = has('action.assign') && (canEdit || action.status === 'blocked')
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -380,6 +383,11 @@ export default function WorkflowExecution() {
                 </div>
               )}
             </dl>
+            {canReassign && (
+              <div className="mt-4 pt-4 border-t border-slate-100">
+                <ReassignControl actionId={action.id} currentAssignee={action.assigned_to} onDone={refresh} />
+              </div>
+            )}
           </div>
 
           <div className="card p-4 bg-gradient-to-br from-indigo-50 to-white">

@@ -1,0 +1,23 @@
+// Déploiement Cloudflare : UN Worker sert le frontend (fichiers statiques Vite) et l'API Express.
+// Même origine pour l'interface et l'API → pas de CORS entre les deux.
+// Secrets (jamais ici) : wrangler secret put SUPABASE_SERVICE_ROLE_KEY | SUPABASE_URL | SUPABASE_ANON_KEY
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "qualidji",
+  "main": "apps/backend/src/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "apps/frontend/dist",
+    "binding": "ASSETS",
+    // Application monopage : toute route inconnue renvoie index.html (React Router)
+    "not_found_handling": "single-page-application",
+    // Seules l'API et le health check réveillent le Worker ; le reste est servi en statique
+    "run_worker_first": ["/api/*", "/health"]
+  },
+  "vars": {
+    // Cloudflare ajoute X-Forwarded-For : un proxy à faire confiance pour req.ip (limitation de débit)
+    "TRUST_PROXY": "1"
+  },
+  "observability": { "enabled": true }
+}
