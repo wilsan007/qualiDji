@@ -7,7 +7,7 @@ import { guideApi, GuideAnswer, GuideResponse, GuideStep, GUIDE_REFRESH_EVENT } 
 import { errorMessage } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
-import { screenForPath } from '@/lib/guideScreen'
+import { screenForPath } from '@/lib/navigation'
 
 const COLLAPSE_KEY = 'qualidji-guide-collapsed'
 

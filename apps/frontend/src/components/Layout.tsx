@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ClipboardList, LayoutDashboard, LogOut, ShieldAlert, Activity, Menu, X, Bell, Table2, LibraryBig, Users2, FileBarChart2, FileText, ClipboardCheck, CalendarCheck } from 'lucide-react'
+import { ClipboardList, LogOut, Menu, X, Bell } from 'lucide-react'
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useAuthStore } from '@/stores/auth'
 import { usePermissions } from '@/hooks/usePermissions'
@@ -9,31 +9,7 @@ import { WifiOff } from 'lucide-react'
 import { roleLabel, spaceForRole } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { GuidePanel } from '@/components/GuidePanel'
-import type { LucideIcon } from 'lucide-react'
-
-interface NavItem {
-  path: string
-  label: string
-  icon: LucideIcon
-  /** Permission requise pour voir l'entrée (RBAC V5 §3.3) — absent = tous rôles */
-  perm?: string
-  /** Visible si l'utilisateur détient AU MOINS UNE de ces permissions (ex. audits : gestion OU réponse) */
-  anyPerm?: string[]
-}
-
-const NAV_ITEMS: NavItem[] = [
-  { path: '/dashboard', label: 'Tableau de bord', icon: LayoutDashboard },
-  { path: '/workflow', label: 'Mes actions', icon: ClipboardList },
-  { path: '/nc', label: 'Non-conformités', icon: ShieldAlert },
-  { path: '/audit', label: 'Prêt audit', icon: Activity, perm: 'audit.export' },
-  { path: '/matrice', label: 'Matrice ISO', icon: Table2 },
-  { path: '/workflows', label: 'Bibliothèque WF', icon: LibraryBig, perm: 'workflow.read' },
-  { path: '/users', label: 'Utilisateurs', icon: Users2, perm: 'user.manage' },
-  { path: '/reports', label: 'Rapports', icon: FileBarChart2, perm: 'action.approve' },
-  { path: '/documents', label: 'Documents', icon: FileText, perm: 'document.read' },
-  { path: '/audits', label: 'Audits internes', icon: ClipboardCheck, anyPerm: ['internal_audit.manage', 'internal_audit.respond'] },
-  { path: '/reviews', label: 'Revues direction', icon: CalendarCheck, perm: 'management_review.manage' },
-]
+import { NAV_ITEMS, pageTitle } from '@/lib/navigation'
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const { signOut } = useAuthStore()
@@ -87,21 +63,6 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       </div>
     </>
   )
-}
-
-function pageTitle(pathname: string): string {
-  if (pathname === '/dashboard') return 'Tableau de bord'
-  if (pathname === '/workflow' || pathname.startsWith('/workflow/')) return 'Mes actions'
-  if (pathname === '/nc') return 'Non-conformités'
-  if (pathname === '/audit') return 'Prêt audit'
-  if (pathname === '/matrice') return 'Matrice de traçabilité'
-  if (pathname === '/workflows') return 'Bibliothèque de workflows'
-  if (pathname === '/users') return 'Utilisateurs du tenant'
-  if (pathname === '/reports') return 'Rapports & préparation d’audit'
-  if (pathname === '/documents') return 'Documents contrôlés'
-  if (pathname === '/audits') return 'Audits internes'
-  if (pathname === '/reviews') return 'Revues de direction'
-  return 'QualiDji'
 }
 
 const NOTIF_KIND_LABELS: Record<string, string> = {

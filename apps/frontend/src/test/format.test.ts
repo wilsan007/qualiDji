@@ -78,3 +78,11 @@ describe('lib/format — libellés et badges', () => {
     expect(errorMessage(undefined)).toContain('Une erreur est survenue')
   })
 })
+
+describe('roleLabel — alignement avec le backend', () => {
+  it('chaque rôle a le même libellé à l’écran et dans le guide / le prompt IA du serveur', async () => {
+    // Le backend garde sa propre table (le prompt « Comment faire… ? » est construit côté serveur) : elle doit rester identique.
+    const { ROLE_LABELS } = await import('../../../backend/src/lib/guide')
+    for (const [role, label] of Object.entries(ROLE_LABELS)) expect(roleLabel(role)).toBe(label)
+  })
+})

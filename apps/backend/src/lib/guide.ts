@@ -399,3 +399,19 @@ export function buildScreenGuide(screen: GuideScreen, f: GuideFacts): ScreenGuid
     manual: MANUAL[screen].filter((id) => !SECTION_PERMISSION[id] || has(SECTION_PERMISSION[id]!)),
   }
 }
+
+/** Entrée de cache des compteurs de la matrice d'un tenant. */
+export interface CachedFacts<T> {
+  fingerprint: string
+  at: number
+  value: T
+}
+
+/**
+ * Réutiliser des compteurs en cache seulement si les données n'ont pas changé depuis
+ * (même empreinte) et que l'entrée n'est pas trop vieille (catalogue global : borne de sécurité).
+ */
+export function isCacheFresh<T>(entry: CachedFacts<T> | undefined, fingerprint: string, now: number, ttlMs: number): entry is CachedFacts<T> {
+  return Boolean(entry) && entry!.fingerprint === fingerprint && now - entry!.at < ttlMs
+}
+

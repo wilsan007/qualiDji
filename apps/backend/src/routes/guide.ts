@@ -6,7 +6,7 @@ import { supabaseAdmin } from '../lib/supabase'
 import { isPlatformAdmin, canSeeAllActions } from '../lib/access'
 import { fetchAll } from '../lib/http'
 import {
-  ActionFact, buildScreenGuide, GUIDE_SCREENS, GuideFacts, GuideScreen, ROLE_LABELS,
+  ActionFact, buildScreenGuide, CachedFacts, GUIDE_SCREENS, GuideFacts, GuideScreen, isCacheFresh, ROLE_LABELS,
 } from '../lib/guide'
 import { noticeSection, searchNotice } from '../lib/notice'
 import {
@@ -169,16 +169,45 @@ async function loadNc(tenantId: string): Promise<NonNullable<GuideFacts['nc']>> 
   }
 }
 
+/** Borne de sécurité du cache (le catalogue global des exigences n'a pas d'horodatage de modification). */
+const MATRIX_CACHE_TTL_MS = 5 * 60_000
+const matrixCache = new Map<string, CachedFacts<NonNullable<GuideFacts['matrix']>>>()
+
+/**
+ * Empreinte des données de matrice du tenant : nombre de lignes + dernière modification des
+ * décisions, des tests et des validations expert (toute écriture de matrix.ts horodate la ligne).
+ * Trois requêtes d'une ligne au lieu du recalcul complet de la matrice à chaque affichage du guide.
+ */
+async function matrixFingerprint(tenantId: string): Promise<string> {
+  const latest = (table: string, col: string) => supabaseAdmin
+    .from(table).select(col, { count: 'exact' }).eq('tenant_id', tenantId).order(col, { ascending: false }).limit(1)
+  const parts = await Promise.all([
+    latest('requirement_assessments', 'updated_at'),
+    latest('requirement_tests', 'updated_at'),
+    latest('matrix_validations', 'decided_at'),
+  ])
+  return parts.map((p) => {
+    if (p.error) throw new Error(p.error.message)
+    return `${p.count ?? 0}@${JSON.stringify((p.data as unknown[] | null)?.[0] ?? null)}`
+  }).join('|')
+}
+
 async function loadMatrixFacts(tenantId: string): Promise<NonNullable<GuideFacts['matrix']>> {
+  const fingerprint = await matrixFingerprint(tenantId)
+  const cached = matrixCache.get(tenantId)
+  if (isCacheFresh(cached, fingerprint, Date.now(), MATRIX_CACHE_TTL_MS)) return cached.value
+
   const { lines } = await loadMatrix(tenantId)
   const reqs = lines.filter((l) => l.requirement_type === 'requirement')
   const { totals } = buildCoverage(lines)
-  return {
+  const value = {
     applicable: totals.applicable,
     blocking: totals.blocking_gaps,
     toReview: reqs.filter((l) => l.assessment?.applicability === 'to_review').length,
     naPending: reqs.filter((l) => l.assessment?.applicability === 'not_applicable' && l.blocking).length,
   }
+  matrixCache.set(tenantId, { fingerprint, at: Date.now(), value })
+  return value
 }
 
 async function loadAudits(tenantId: string, userId: string): Promise<NonNullable<GuideFacts['audits']>> {

@@ -8,7 +8,7 @@ const { mockGuideApi } = vi.hoisted(() => ({ mockGuideApi: { get: vi.fn(), ask: 
 vi.mock('@/lib/api', () => ({ guideApi: mockGuideApi, GUIDE_REFRESH_EVENT: 'qualidji:data-changed' }))
 
 import { GuidePanel } from '@/components/GuidePanel'
-import { screenForPath } from '@/lib/guideScreen'
+import { NAV_ITEMS, pageTitle, screenForPath } from '@/lib/navigation'
 
 const QM_GUIDE = {
   guide: {
@@ -67,6 +67,15 @@ describe('GuidePanel', () => {
     expect(screenForPath('/workflow/abc')).toEqual({ screen: 'action', actionId: 'abc' })
     expect(screenForPath('/reviews/')).toEqual({ screen: 'reviews', actionId: null })
     expect(screenForPath('/login')).toBeNull()
+  })
+
+  it('chaque entrée du menu a son écran de guide et son titre (source unique)', () => {
+    for (const item of NAV_ITEMS) {
+      expect(screenForPath(item.path)?.screen).toBe(item.screen)
+      expect(pageTitle(item.path)).toBe(item.title)
+    }
+    expect(pageTitle('/workflow/abc')).toBe('Mes actions')
+    expect(pageTitle('/inconnu')).toBe('QualiDji')
   })
 
   it('affiche le rôle, les étapes et met en avant la prochaine', async () => {

@@ -4,7 +4,7 @@
  * lib/notice.ts et lib/guideAsk.ts.
  * Exécution : pnpm --filter @iso/backend test:guide
  */
-import { buildScreenGuide, GUIDE_SCREENS, GuideFacts, ActionFact } from '../src/lib/guide'
+import { buildScreenGuide, GUIDE_SCREENS, GuideFacts, ActionFact, isCacheFresh } from '../src/lib/guide'
 import { searchNotice, NOTICE_SECTIONS } from '../src/lib/notice'
 import { askPlan, buildFallbackAnswer, detectPersonalData, validateAskResponse } from '../src/lib/guideAsk'
 import { fetchAll } from '../src/lib/http'
@@ -200,6 +200,15 @@ console.log('\n— Appels fournisseur —')
 {
   const wfDraft = buildScreenGuide('workflows', facts('quality_manager', { workflows: { published: 1, ownPublished: 0, ownInProgress: 1, toApprove: 0, myDrafts: 1 } }))
   assert('workflow global déjà dupliqué : plus d’étape « Adapter le workflow global »', !wfDraft.steps.some((s) => s.id === 'wf-duplicate') && wfDraft.next?.id === 'wf-drafts')
+}
+
+console.log('\n— Cache des compteurs de la matrice —')
+{
+  const entry = { fingerprint: '54@a|108@b|0@null', at: 1_000, value: { applicable: 54, blocking: 10, toReview: 0, naPending: 0 } }
+  assert('cache : même empreinte, entrée récente → réutilisé', isCacheFresh(entry, '54@a|108@b|0@null', 2_000, 300_000))
+  assert('cache : une ligne de matrice modifiée (empreinte différente) → recalcul', !isCacheFresh(entry, '54@a2|108@b|0@null', 2_000, 300_000))
+  assert('cache : entrée trop vieille → recalcul', !isCacheFresh(entry, '54@a|108@b|0@null', 1_000 + 300_000, 300_000))
+  assert('cache : aucune entrée → recalcul', !isCacheFresh(undefined, 'x', 0, 300_000))
 }
 
 void runAsync().then(() => {
