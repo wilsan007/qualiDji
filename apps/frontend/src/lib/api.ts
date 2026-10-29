@@ -31,9 +31,10 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.error ?? `API error ${res.status}`)
   }
-  // Une écriture réussie peut changer « ce qu'il faut faire » : le guide contextuel se recalcule.
+  // Une écriture réussie peut changer « ce qu'il faut faire » : le guide contextuel se recalcule
+  // (sauf ses propres appels et la lecture des notifications, qui ne changent rien à faire).
   const method = (options.method ?? 'GET').toUpperCase()
-  if (method !== 'GET' && !path.startsWith('/guide') && typeof window !== 'undefined') {
+  if (method !== 'GET' && !/^\/(guide|notifications)\b/.test(path) && typeof window !== 'undefined') {
     window.dispatchEvent(new Event(GUIDE_REFRESH_EVENT))
   }
   if (res.status === 204) return null

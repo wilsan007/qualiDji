@@ -113,9 +113,9 @@ export class HttpAIProvider implements AIProvider {
         signal: controller.signal,
       })
       if (!res.ok) {
-        // Message d'erreur du fournisseur (ex. clé invalide, modèle inconnu, crédit épuisé) — jamais la clé
+        // Message d'erreur du fournisseur (ex. clé invalide, modèle inconnu, crédit épuisé), fragments de clé masqués
         const detail = await res.json().then((b: any) => b?.error?.message ?? b?.error?.code ?? '').catch(() => '')
-        throw new Error(`provider HTTP ${res.status}${detail ? ` — ${String(detail).slice(0, 200)}` : ''}`)
+        throw new ProviderHttpError(res.status, redactProviderMessage(String(detail)).slice(0, 200))
       }
       const data: any = await res.json()
       const text = data?.choices?.[0]?.message?.content
@@ -125,6 +125,25 @@ export class HttpAIProvider implements AIProvider {
       clearTimeout(timer)
     }
   }
+}
+
+/** Échec HTTP du fournisseur, avec son statut (décide du réessai). */
+export class ProviderHttpError extends Error {
+  constructor(readonly status: number, detail: string) {
+    super(`provider HTTP ${status}${detail ? ` — ${detail}` : ''}`)
+  }
+}
+
+/** Une erreur 4xx (clé refusée, crédit épuisé, modèle inconnu…) ne se corrige pas en réessayant. */
+export function isRetryable(e: unknown): boolean {
+  return !(e instanceof ProviderHttpError && e.status >= 400 && e.status < 500 && e.status !== 408)
+}
+
+/** Les fournisseurs recopient parfois la clé reçue (même partiellement masquée) dans leur message : on la retire. */
+export function redactProviderMessage(message: string): string {
+  return message
+    .replace(/(api key provided:\s*)\S+/gi, '$1[masquée]')
+    .replace(/\b(sk|rk|pk)-[A-Za-z0-9_*.-]{4,}/g, '[clé masquée]')
 }
 
 let breaker = new CircuitBreaker()
@@ -159,7 +178,7 @@ export function getProvider(): { provider: AIProvider; http: boolean } {
   return { provider: new TemplateAIProvider(), http: false }
 }
 
-/** Appel avec retry borné (1) — renvoie null si le circuit est ouvert ou si tout échoue. */
+/** Appel avec retry borné (1, sauf erreur 4xx définitive) — renvoie null si le circuit est ouvert ou si tout échoue. */
 export async function callProvider(req: AIGenerateRequest): Promise<{ result: AIGenerateResult; http: boolean } | null> {
   const { provider, http } = getProvider()
   if (http && breaker.isOpen) return null
@@ -173,6 +192,7 @@ export async function callProvider(req: AIGenerateRequest): Promise<{ result: AI
       if (http) {
         breaker.recordFailure()
         console.error(`[ai] appel fournisseur en échec (tentative ${i + 1}/${attempts}) :`, e?.name === 'AbortError' ? 'délai dépassé' : e?.message ?? e)
+        if (!isRetryable(e)) break
       }
     }
   }

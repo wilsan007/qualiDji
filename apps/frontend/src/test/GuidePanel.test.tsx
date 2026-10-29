@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useNavigate } from 'react-router-dom'
 
 /** Guide « Que faire ici ? » : étapes calculées par le serveur, notice, question libre. */
 const { mockGuideApi } = vi.hoisted(() => ({ mockGuideApi: { get: vi.fn(), ask: vi.fn() } }))
@@ -31,6 +31,28 @@ const QM_GUIDE = {
 function renderAt(path: string) {
   return render(<MemoryRouter initialEntries={[path]}><GuidePanel /></MemoryRouter>)
 }
+
+/** Bouton de test qui change d'écran sans démonter le panneau (comme le menu du Layout). */
+function GoTo({ to }: { to: string }) {
+  const navigate = useNavigate()
+  return <button onClick={() => navigate(to)}>aller {to}</button>
+}
+
+function renderWithNav(path: string, to: string) {
+  return render(<MemoryRouter initialEntries={[path]}><GoTo to={to} /><GuidePanel /></MemoryRouter>)
+}
+
+function deferred<T>() {
+  let resolve!: (v: T) => void
+  const promise = new Promise<T>((r) => { resolve = r })
+  return { promise, resolve }
+}
+
+const guideOf = (screen: string, label: string) => ({
+  ...QM_GUIDE,
+  guide: { ...QM_GUIDE.guide, screen, steps: [{ id: `${screen}-step`, status: 'todo', label }], next: { id: `${screen}-step`, status: 'todo', label }, manual: [] },
+  manual: [],
+})
 
 describe('GuidePanel', () => {
   beforeEach(() => {
@@ -114,6 +136,45 @@ describe('GuidePanel', () => {
     await userEvent.type(screen.getByLabelText('Comment faire… ?'), 'écrire à a@b.fr')
     await userEvent.click(screen.getByRole('button', { name: /Demander/ }))
     expect(await screen.findByText(/Retirez la donnée personnelle/)).toBeInTheDocument()
+  })
+
+  it('ignore la réponse tardive de l’écran quitté (le guide affiché reste celui de l’écran courant)', async () => {
+    const matrice = deferred<unknown>()
+    mockGuideApi.get.mockImplementation((screen: string) =>
+      screen === 'matrice' ? matrice.promise : Promise.resolve(guideOf('dashboard', 'Guide du tableau de bord')))
+    renderWithNav('/matrice', '/dashboard')
+    await userEvent.click(screen.getByRole('button', { name: 'aller /dashboard' }))
+    expect(await screen.findByText('Guide du tableau de bord')).toBeInTheDocument()
+    await act(async () => { matrice.resolve(guideOf('matrice', 'Compléter 54 exigences')) })
+    expect(screen.queryByText('Compléter 54 exigences')).not.toBeInTheDocument()
+    expect(screen.getByText('Guide du tableau de bord')).toBeInTheDocument()
+  })
+
+  it('n’affiche pas l’ancien guide pendant le chargement du nouvel écran', async () => {
+    const dashboard = deferred<unknown>()
+    mockGuideApi.get.mockImplementation((screen: string) =>
+      screen === 'matrice' ? Promise.resolve(guideOf('matrice', 'Compléter 54 exigences')) : dashboard.promise)
+    renderWithNav('/matrice', '/dashboard')
+    expect(await screen.findByText('Compléter 54 exigences')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'aller /dashboard' }))
+    expect(screen.queryByText('Compléter 54 exigences')).not.toBeInTheDocument()
+    await act(async () => { dashboard.resolve(guideOf('dashboard', 'Guide du tableau de bord')) })
+    expect(screen.getByText('Guide du tableau de bord')).toBeInTheDocument()
+  })
+
+  it('n’affiche pas sur un autre écran la réponse à une question posée avant de naviguer', async () => {
+    const answer = deferred<unknown>()
+    mockGuideApi.ask.mockReturnValue(answer.promise)
+    renderWithNav('/dashboard', '/documents')
+    await screen.findByText('2 actions soumises à valider')
+    await userEvent.type(screen.getByLabelText('Comment faire… ?'), 'comment joindre une preuve')
+    await userEvent.click(screen.getByRole('button', { name: /Demander/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'aller /documents' }))
+    await act(async () => {
+      answer.resolve({ answer: 'Réponse sur les preuves', steps: ['Joindre le fichier'], sources: [], warnings: [], confidence_label: 'high', degraded: false, model: 'm' })
+    })
+    expect(screen.queryByText('Réponse sur les preuves')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Demander/ })).not.toBeDisabled()
   })
 
   it('n’affiche rien hors des écrans du menu', () => {

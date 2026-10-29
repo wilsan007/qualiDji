@@ -10,6 +10,7 @@ import {
 } from '../lib/aiGuard'
 import { callProvider, getCircuitBreaker, sha256 } from '../lib/aiProvider'
 import { dbFail } from '../lib/http'
+import { NOTICE_MODEL } from '../lib/guideAsk'
 
 /**
  * §7 Assistant IA — pipeline obligatoire (§7.3) et règles R1-R10 (§7.5).
@@ -87,14 +88,17 @@ export function quotaVerdict(byUser: number, byTenant: number, userLimit = QUOTA
   return null
 }
 
+/** Les réponses tirées de la notice sans appel fournisseur (guide « Comment faire… ? ») ne consomment pas le quota. */
+const NOT_NOTICE_ONLY = `model.is.null,model.neq.${NOTICE_MODEL}`
+
 export async function quotaExceeded(tenantId: string, userId: string): Promise<'user' | 'tenant' | null> {
   const hourAgo = new Date(Date.now() - 3_600_000).toISOString()
   const dayAgo = new Date(Date.now() - 86_400_000).toISOString()
   const [byUser, byTenant] = await Promise.all([
     supabaseAdmin.from('ai_interventions').select('id', { count: 'exact', head: true })
-      .eq('tenant_id', tenantId).eq('user_id', userId).gte('created_at', hourAgo),
+      .eq('tenant_id', tenantId).eq('user_id', userId).gte('created_at', hourAgo).or(NOT_NOTICE_ONLY),
     supabaseAdmin.from('ai_interventions').select('id', { count: 'exact', head: true })
-      .eq('tenant_id', tenantId).gte('created_at', dayAgo),
+      .eq('tenant_id', tenantId).gte('created_at', dayAgo).or(NOT_NOTICE_ONLY),
   ])
   return quotaVerdict(byUser.count ?? 0, byTenant.count ?? 0)
 }

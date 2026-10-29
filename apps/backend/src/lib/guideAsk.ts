@@ -99,3 +99,18 @@ export function buildFallbackAnswer(sections: NoticeSection[], guide: ScreenGuid
     confidence_label: 'medium',
   }
 }
+
+/** Modèle journalisé quand AUCUN appel fournisseur n'a eu lieu : ces lignes ne consomment pas le quota IA. */
+export const NOTICE_MODEL = 'notice-fallback'
+
+/**
+ * Décide si la question part au fournisseur. Le quota ne protège que l'IA : sans fournisseur,
+ * ou quota atteint, la réponse vient de la notice (jamais de refus pour une réponse déterministe).
+ */
+export function askPlan(providerConfigured: boolean, quota: 'user' | 'tenant' | null, limits: { user: number; tenant: number }): { callAi: boolean; warning: string | null } {
+  if (!providerConfigured) return { callAi: false, warning: null }
+  if (quota === 'user') return { callAi: false, warning: `Quota IA atteint (${limits.user} demandes par heure et par utilisateur) — réponse tirée de la notice d’utilisation.` }
+  if (quota === 'tenant') return { callAi: false, warning: `Quota IA du tenant atteint (${limits.tenant} demandes par jour) — réponse tirée de la notice d’utilisation.` }
+  return { callAi: true, warning: null }
+}
+

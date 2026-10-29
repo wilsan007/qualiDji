@@ -4,16 +4,17 @@ import { z } from 'zod'
 import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '../middleware/auth'
 import { supabaseAdmin } from '../lib/supabase'
 import { isPlatformAdmin, canSeeAllActions } from '../lib/access'
+import { fetchAll } from '../lib/http'
 import {
   ActionFact, buildScreenGuide, GUIDE_SCREENS, GuideFacts, GuideScreen, ROLE_LABELS,
 } from '../lib/guide'
 import { noticeSection, searchNotice } from '../lib/notice'
 import {
-  ASK_SCHEMA_VERSION, askCorpus, buildAskSystemPrompt, buildAskUserPrompt, buildFallbackAnswer,
-  detectPersonalData, validateAskResponse,
+  ASK_SCHEMA_VERSION, askCorpus, askPlan, buildAskSystemPrompt, buildAskUserPrompt, buildFallbackAnswer,
+  detectPersonalData, NOTICE_MODEL, validateAskResponse,
 } from '../lib/guideAsk'
 import { detectInjection, filterCorpusForInjection } from '../lib/aiGuard'
-import { callProvider, getCircuitBreaker, sha256 } from '../lib/aiProvider'
+import { callProvider, getCircuitBreaker, getProvider, sha256 } from '../lib/aiProvider'
 import { publishedDocumentsCorpus, quotaExceeded, QUOTA_TENANT_PER_DAY, QUOTA_USER_PER_HOUR } from './ai'
 import { buildCoverage, loadMatrix } from './matrix'
 
@@ -28,40 +29,45 @@ const router: ExpressRouter = Router()
 /** Rôles qui exécutent les actions (miroir de la liste « Assigner à »). */
 const EXECUTOR_ROLES = ['process_owner', 'operator', 'site_manager', 'department_manager']
 
+/** Toutes les lignes (pagination par 1000) ; une erreur base LÈVE au lieu de passer pour « rien à faire ». */
+async function all<T>(build: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>): Promise<T[]> {
+  return (await fetchAll<T>(build)).rows
+}
+
 async function permissionsOf(req: AuthedRequest): Promise<Set<string>> {
   if (isPlatformAdmin(req)) {
-    const { data } = await supabaseAdmin.from('permissions').select('code')
-    return new Set((data ?? []).map((p) => p.code))
+    const rows = await all<{ code: string }>((a, b) => supabaseAdmin.from('permissions').select('code').order('code').range(a, b))
+    return new Set(rows.map((p) => p.code))
   }
   return req.permissions ?? new Set()
 }
 
 async function loadTeam(tenantId: string): Promise<NonNullable<GuideFacts['team']>> {
-  const { data } = await supabaseAdmin.from('user_profiles').select('role, is_active').eq('tenant_id', tenantId)
-  const active = (data ?? []).filter((u) => u.is_active !== false)
+  const rows = await all<{ role: string; is_active: boolean | null }>((a, b) =>
+    supabaseAdmin.from('user_profiles').select('role, is_active').eq('tenant_id', tenantId).order('id').range(a, b))
+  const active = rows.filter((u) => u.is_active !== false)
   return {
     active: active.length,
     executors: active.filter((u) => EXECUTOR_ROLES.includes(u.role)).length,
     qualityManagers: active.filter((u) => u.role === 'quality_manager').length,
     internalAuditors: active.filter((u) => u.role === 'internal_auditor').length,
-    suspended: (data ?? []).length - active.length,
+    suspended: rows.length - active.length,
   }
 }
 
 async function loadTenantActions(tenantId: string, userId: string): Promise<NonNullable<GuideFacts['tenantActions']>> {
-  const { data } = await supabaseAdmin
-    .from('actions').select('id, status, due_at, assigned_to, submitted_at').eq('tenant_id', tenantId)
-  const rows = data ?? []
-  const submitted = rows.filter((a) => a.status === 'submitted' && a.assigned_to !== userId)
-  // Séparation des tâches : une action dont j'ai rempli une étape n'est pas « à valider » par moi
-  let mine = new Set<string>()
-  if (submitted.length) {
-    const { data: subs } = await supabaseAdmin
-      .from('step_submissions').select('action_id').eq('submitted_by', userId).in('action_id', submitted.map((a) => a.id))
-    mine = new Set((subs ?? []).map((s) => s.action_id))
-  }
-  const toApprove = submitted
-    .filter((a) => !mine.has(a.id))
+  const [rows, mySubs] = await Promise.all([
+    all<{ id: string; status: string; due_at: string | null; assigned_to: string | null; submitted_at: string | null }>((a, b) =>
+      supabaseAdmin.from('actions').select('id, status, due_at, assigned_to, submitted_at').eq('tenant_id', tenantId).order('id').range(a, b)),
+    // Séparation des tâches : une action soumise dont j'ai rempli une étape n'est pas « à valider » par moi.
+    // Jointure côté base (pas de liste d'ids dans l'URL, qui déborde quand les actions soumises sont nombreuses).
+    all<{ action_id: string }>((a, b) =>
+      supabaseAdmin.from('step_submissions').select('action_id, actions!inner(status)')
+        .eq('tenant_id', tenantId).eq('submitted_by', userId).eq('actions.status', 'submitted').order('id').range(a, b)),
+  ])
+  const mine = new Set(mySubs.map((s) => s.action_id))
+  const toApprove = rows
+    .filter((a) => a.status === 'submitted' && a.assigned_to !== userId && !mine.has(a.id))
     .sort((a, b) => String(a.submitted_at ?? '').localeCompare(String(b.submitted_at ?? '')))
   const now = Date.now()
   return {
@@ -73,12 +79,14 @@ async function loadTenantActions(tenantId: string, userId: string): Promise<NonN
 
 /** Calcule la prochaine étape obligatoire d'une action (rang 1-based parmi les étapes à saisir). */
 async function actionFact(action: any, userId: string): Promise<ActionFact> {
-  const [{ data: steps }, { data: subs }] = await Promise.all([
-    supabaseAdmin.from('workflow_steps').select('id, title, sequence, required, step_type').eq('action_id', action.action_def_id),
-    supabaseAdmin.from('step_submissions').select('step_id, submitted_by').eq('action_id', action.id),
+  const [steps, subs] = await Promise.all([
+    all<{ id: string; title: string; sequence: number | null; required: boolean; step_type: string }>((a, b) =>
+      supabaseAdmin.from('workflow_steps').select('id, title, sequence, required, step_type').eq('action_id', action.action_def_id).order('id').range(a, b)),
+    all<{ step_id: string; submitted_by: string | null }>((a, b) =>
+      supabaseAdmin.from('step_submissions').select('step_id, submitted_by').eq('action_id', action.id).order('id').range(a, b)),
   ])
-  const ordered = (steps ?? []).filter((s) => s.step_type !== 'approval').sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))
-  const done = new Set((subs ?? []).map((s) => s.step_id))
+  const ordered = steps.filter((s) => s.step_type !== 'approval').sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))
+  const done = new Set(subs.map((s) => s.step_id))
   const nextIdx = ordered.findIndex((s) => s.required && !done.has(s.id))
   return {
     id: action.id,
@@ -89,16 +97,15 @@ async function actionFact(action: any, userId: string): Promise<ActionFact> {
     stepTotal: ordered.length,
     rejected: action.status === 'in_progress' && Boolean(action.reviewed_by) && Boolean(action.review_comment),
     reviewComment: action.status === 'in_progress' ? (action.review_comment ?? null) : null,
-    viewerIsExecutor: action.assigned_to === userId || (subs ?? []).some((s) => s.submitted_by === userId),
+    viewerIsExecutor: action.assigned_to === userId || subs.some((s) => s.submitted_by === userId),
   }
 }
 
 async function loadMyActions(tenantId: string, userId: string): Promise<Pick<GuideFacts, 'myActions' | 'nextAction'>> {
-  const { data } = await supabaseAdmin
+  const rows = await all<any>((a, b) => supabaseAdmin
     .from('actions')
     .select('id, status, action_def_id, assigned_to, due_at, created_at, reviewed_by, review_comment, workflow_actions(title)')
-    .eq('tenant_id', tenantId).eq('assigned_to', userId)
-  const rows = data ?? []
+    .eq('tenant_id', tenantId).eq('assigned_to', userId).order('id').range(a, b))
   const isRejected = (a: any) => a.status === 'in_progress' && a.reviewed_by && a.review_comment
   const count = (st: string) => rows.filter((a) => a.status === st).length
   // Priorité : action rejetée à corriger, puis en cours, puis assignée ; à priorité égale, l'échéance la plus proche
@@ -121,22 +128,22 @@ async function loadMyActions(tenantId: string, userId: string): Promise<Pick<Gui
 }
 
 async function loadWorkflows(tenantId: string, userId: string): Promise<NonNullable<GuideFacts['workflows']>> {
-  const { data } = await supabaseAdmin
-    .from('workflow_definitions').select('status, tenant_id, created_by, updated_by')
-    .or(`tenant_id.is.null,tenant_id.eq.${tenantId}`)
-  const rows = data ?? []
+  const rows = await all<{ status: string; tenant_id: string | null; created_by: string | null; updated_by: string | null }>((a, b) =>
+    supabaseAdmin.from('workflow_definitions').select('status, tenant_id, created_by, updated_by')
+      .or(`tenant_id.is.null,tenant_id.eq.${tenantId}`).order('id').range(a, b))
   const own = rows.filter((w) => w.tenant_id === tenantId)
   return {
     published: rows.filter((w) => w.status === 'published').length,
     ownPublished: own.filter((w) => w.status === 'published').length,
+    ownInProgress: own.filter((w) => w.status === 'draft' || w.status === 'in_review').length,
     toApprove: own.filter((w) => w.status === 'in_review' && w.created_by !== userId && w.updated_by !== userId).length,
     myDrafts: own.filter((w) => w.status === 'draft' && w.created_by === userId).length,
   }
 }
 
 async function loadDocuments(tenantId: string, userId: string): Promise<NonNullable<GuideFacts['documents']>> {
-  const { data } = await supabaseAdmin.from('documents').select('status, created_by, updated_by').eq('tenant_id', tenantId)
-  const rows = data ?? []
+  const rows = await all<{ status: string; created_by: string | null; updated_by: string | null }>((a, b) =>
+    supabaseAdmin.from('documents').select('status, created_by, updated_by').eq('tenant_id', tenantId).order('id').range(a, b))
   return {
     published: rows.filter((d) => d.status === 'published').length,
     toApprove: rows.filter((d) => d.status === 'in_review' && d.created_by !== userId && d.updated_by !== userId).length,
@@ -146,17 +153,19 @@ async function loadDocuments(tenantId: string, userId: string): Promise<NonNulla
 }
 
 async function loadNc(tenantId: string): Promise<NonNullable<GuideFacts['nc']>> {
-  const [{ data: ncs }, { data: capas }] = await Promise.all([
-    supabaseAdmin.from('nonconformities').select('id, status').eq('tenant_id', tenantId),
-    supabaseAdmin.from('capas').select('nonconformity_id, status, due_date').eq('tenant_id', tenantId),
+  const [ncs, capas] = await Promise.all([
+    all<{ id: string; status: string }>((a, b) =>
+      supabaseAdmin.from('nonconformities').select('id, status').eq('tenant_id', tenantId).order('id').range(a, b)),
+    all<{ nonconformity_id: string; status: string; due_date: string | null }>((a, b) =>
+      supabaseAdmin.from('capas').select('nonconformity_id, status, due_date').eq('tenant_id', tenantId).order('id').range(a, b)),
   ])
-  const withCapa = new Set((capas ?? []).map((c) => c.nonconformity_id))
-  const open = (ncs ?? []).filter((n) => n.status !== 'closed')
+  const withCapa = new Set(capas.map((c) => c.nonconformity_id))
+  const open = ncs.filter((n) => n.status !== 'closed')
   const today = new Date().toISOString().slice(0, 10)
   return {
     open: open.length,
     withoutCapa: open.filter((n) => !withCapa.has(n.id)).length,
-    capaOverdue: (capas ?? []).filter((c) => c.status === 'open' && c.due_date && c.due_date < today).length,
+    capaOverdue: capas.filter((c) => c.status === 'open' && c.due_date && c.due_date < today).length,
   }
 }
 
@@ -173,28 +182,31 @@ async function loadMatrixFacts(tenantId: string): Promise<NonNullable<GuideFacts
 }
 
 async function loadAudits(tenantId: string, userId: string): Promise<NonNullable<GuideFacts['audits']>> {
-  const [{ data: audits }, { data: findings }] = await Promise.all([
-    supabaseAdmin.from('internal_audits').select('id, status, auditor_id').eq('tenant_id', tenantId),
-    supabaseAdmin.from('audit_findings').select('audit_id, status, process_owner_id, responded_by').eq('tenant_id', tenantId),
+  const [audits, findings] = await Promise.all([
+    all<{ id: string; status: string; auditor_id: string }>((a, b) =>
+      supabaseAdmin.from('internal_audits').select('id, status, auditor_id').eq('tenant_id', tenantId).order('id').range(a, b)),
+    all<{ audit_id: string; status: string; process_owner_id: string | null; responded_by: string | null }>((a, b) =>
+      supabaseAdmin.from('audit_findings').select('audit_id, status, process_owner_id, responded_by').eq('tenant_id', tenantId).order('id').range(a, b)),
   ])
-  const mine = (audits ?? []).filter((a) => a.auditor_id === userId)
+  const mine = audits.filter((a) => a.auditor_id === userId)
   const myInProgress = mine.filter((a) => a.status === 'in_progress')
-  const unresolved = new Set((findings ?? []).filter((f) => ['open', 'responded', 'reopened'].includes(f.status)).map((f) => f.audit_id))
+  const unresolved = new Set(findings.filter((f) => ['open', 'responded', 'reopened'].includes(f.status)).map((f) => f.audit_id))
   const myAuditIds = new Set(mine.map((a) => a.id))
   return {
-    open: (audits ?? []).filter((a) => a.status !== 'closed').length,
+    open: audits.filter((a) => a.status !== 'closed').length,
     toStart: mine.filter((a) => a.status === 'planned').length,
     inProgress: myInProgress.length,
-    toVerify: (findings ?? []).filter((f) => myAuditIds.has(f.audit_id) && f.status === 'responded' && f.responded_by !== userId).length,
+    toVerify: findings.filter((f) => myAuditIds.has(f.audit_id) && f.status === 'responded' && f.responded_by !== userId).length,
     closable: myInProgress.filter((a) => !unresolved.has(a.id)).length,
-    toRespond: (findings ?? []).filter((f) => f.process_owner_id === userId && ['open', 'reopened'].includes(f.status)).length,
+    toRespond: findings.filter((f) => f.process_owner_id === userId && ['open', 'reopened'].includes(f.status)).length,
   }
 }
 
 async function loadReviews(tenantId: string): Promise<NonNullable<GuideFacts['reviews']>> {
-  const { data } = await supabaseAdmin.from('management_reviews').select('status, inputs, held_at').eq('tenant_id', tenantId)
-  const drafts = (data ?? []).filter((r) => r.status === 'draft')
-  const held = (data ?? []).map((r) => r.held_at).filter(Boolean).sort() as string[]
+  const rows = await all<{ status: string; inputs: Record<string, unknown> | null; held_at: string | null }>((a, b) =>
+    supabaseAdmin.from('management_reviews').select('status, inputs, held_at').eq('tenant_id', tenantId).order('id').range(a, b))
+  const drafts = rows.filter((r) => r.status === 'draft')
+  const held = rows.map((r) => r.held_at).filter(Boolean).sort() as string[]
   return {
     drafts: drafts.length,
     draftsWithoutInputs: drafts.filter((r) => !r.inputs || Object.keys(r.inputs).length === 0).length,
@@ -203,10 +215,11 @@ async function loadReviews(tenantId: string): Promise<NonNullable<GuideFacts['re
 }
 
 async function loadActionDetail(req: AuthedRequest, actionId: string): Promise<ActionFact | null> {
-  const { data: action } = await supabaseAdmin
+  const { data: action, error } = await supabaseAdmin
     .from('actions')
     .select('id, status, action_def_id, assigned_to, reviewed_by, review_comment, workflow_actions(title)')
     .eq('tenant_id', req.user!.tenant_id!).eq('id', actionId).maybeSingle()
+  if (error) throw new Error(error.message)
   // Même visibilité que GET /actions/:id : un exécutant ne voit que ses actions
   if (!action || (!canSeeAllActions(req) && action.assigned_to !== req.user!.id)) return null
   return actionFact(action, req.user!.id)
@@ -283,17 +296,6 @@ router.post('/ask', requireAuth, requireTenant, requirePermission('tenant.read')
     })
   }
 
-  const exceeded = await quotaExceeded(tenantId, userId)
-  if (exceeded) {
-    res.setHeader('Retry-After', exceeded === 'user' ? '3600' : '86400')
-    return res.status(429).json({
-      error: exceeded === 'user'
-        ? `quota IA atteint (${QUOTA_USER_PER_HOUR} demandes par heure et par utilisateur)`
-        : `quota IA du tenant atteint (${QUOTA_TENANT_PER_DAY} demandes par jour)`,
-      code: 'ERR_AI_QUOTA',
-    })
-  }
-
   const inputHash = sha256(`${screen}|${question}`)
   // R8 : la question est une DONNÉE — une tentative d'injection est rejetée et journalisée
   const scan = detectInjection(question)
@@ -332,22 +334,36 @@ router.post('/ask', requireAuth, requireTenant, requirePermission('tenant.read')
   const corpus = askCorpus(sections, docs)
   const validIds = new Set(corpus.map((c) => c.id))
 
+  // Quota : uniquement si un fournisseur est configuré ; atteint → réponse de la notice, pas de refus
+  const providerConfigured = getProvider().http
+  const plan = askPlan(
+    providerConfigured,
+    providerConfigured ? await quotaExceeded(tenantId, userId) : null,
+    { user: QUOTA_USER_PER_HOUR, tenant: QUOTA_TENANT_PER_DAY },
+  )
+
   const startedAt = Date.now()
-  const called = await callProvider({
-    system: buildAskSystemPrompt(),
-    user: buildAskUserPrompt(question, guide, roleLabel, corpus),
-    schemaHint: ASK_SCHEMA_VERSION,
-  })
+  const called = plan.callAi
+    ? await callProvider({
+      system: buildAskSystemPrompt(),
+      user: buildAskUserPrompt(question, guide, roleLabel, corpus),
+      schemaHint: ASK_SCHEMA_VERSION,
+    })
+    : null
 
   let answer = buildFallbackAnswer(found, guide)
   let degraded = true
   let resultStatus: 'ok' | 'degraded' | 'unavailable' | 'error' = 'unavailable'
-  let model = 'notice-fallback'
+  // Un appel tenté puis échoué compte dans le quota (il a coûté) ; une réponse notice sans appel, non
+  let model = plan.callAi ? 'provider-failed' : NOTICE_MODEL
   let latencyMs = Date.now() - startedAt
-  const warnings: string[] = []
+  const warnings: string[] = plan.warning ? [plan.warning] : []
   let removedSources: string[] = []
 
-  if (called?.http) {
+  if (!plan.callAi) {
+    if (!providerConfigured) warnings.push('Aucun fournisseur IA configuré — réponse tirée de la notice d’utilisation.')
+    else resultStatus = 'degraded'
+  } else if (called?.http) {
     model = called.result.model
     latencyMs = called.result.latencyMs
     let raw: unknown = null
@@ -363,8 +379,6 @@ router.post('/ask', requireAuth, requireTenant, requirePermission('tenant.read')
       resultStatus = 'error'
       warnings.push('Réponse de l’assistant non conforme — extraits de la notice affichés à la place (R6).')
     }
-  } else if (called && !called.http) {
-    warnings.push('Aucun fournisseur IA configuré — réponse tirée de la notice d’utilisation.')
   } else {
     resultStatus = getCircuitBreaker().isOpen ? 'degraded' : 'error'
     warnings.push('Assistant IA indisponible — réponse tirée de la notice d’utilisation (R6).')
@@ -397,7 +411,7 @@ router.post('/ask', requireAuth, requireTenant, requirePermission('tenant.read')
         kind: 'guide.ask',
         schema: ASK_SCHEMA_VERSION,
         screen,
-        mode: called?.http ? 'provider' : 'notice',
+        mode: plan.callAi ? 'provider' : 'notice',
         warnings,
         removed_sources: removedSources,
         excluded_documents: flagged,

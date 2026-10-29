@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import {
   AlertTriangle, BookOpen, CheckCircle2, ChevronDown, ChevronUp, Compass, Info, MessageCircleQuestion, RefreshCw, ShieldAlert,
@@ -50,23 +50,37 @@ export function GuidePanel() {
   const [asking, setAsking] = useState(false)
   const [askError, setAskError] = useState('')
 
+  // Une réponse n'est appliquée que si elle répond à la DERNIÈRE requête de l'écran affiché :
+  // une requête lente d'un écran quitté (ou dépassée par une plus récente) est ignorée.
+  const viewKey = `${screen}|${actionId ?? ''}`
+  const viewRef = useRef(viewKey)
+  viewRef.current = viewKey
+  const lastGuideRequest = useRef(0)
+
   const refresh = useCallback(async () => {
     if (!screen) return
+    const requestId = ++lastGuideRequest.current
     setLoading(true)
     try {
-      setData(await guideApi.get(screen, actionId))
+      const res = await guideApi.get(screen, actionId)
+      if (requestId !== lastGuideRequest.current) return
+      setData(res)
       setError('')
     } catch (e) {
+      if (requestId !== lastGuideRequest.current) return
       setError(errorMessage(e))
     } finally {
-      setLoading(false)
+      if (requestId === lastGuideRequest.current) setLoading(false)
     }
   }, [screen, actionId])
 
-  // Nouvel écran : nouveau guide, réponse et section ouvertes effacées
+  // Nouvel écran : nouveau guide ; l'ancien guide, la réponse et la section ouvertes sont effacés
   useEffect(() => {
+    setData(null)
+    setError('')
     setAnswer(null)
     setAskError('')
+    setAsking(false)
     setOpenSection(null)
     void refresh()
   }, [refresh])
@@ -97,15 +111,19 @@ export function GuidePanel() {
   const ask = async (e: FormEvent) => {
     e.preventDefault()
     if (!screen || question.trim().length < 3) return
+    const askedOn = viewKey
     setAsking(true)
     setAskError('')
     try {
-      setAnswer(await guideApi.ask(screen, question.trim(), actionId))
+      const res = await guideApi.ask(screen, question.trim(), actionId)
+      if (viewRef.current !== askedOn) return // l'utilisateur a changé d'écran : réponse hors sujet ici
+      setAnswer(res)
     } catch (err) {
+      if (viewRef.current !== askedOn) return
       setAnswer(null)
       setAskError(errorMessage(err))
     } finally {
-      setAsking(false)
+      if (viewRef.current === askedOn) setAsking(false)
     }
   }
 

@@ -6,7 +6,9 @@
  */
 import { buildScreenGuide, GUIDE_SCREENS, GuideFacts, ActionFact } from '../src/lib/guide'
 import { searchNotice, NOTICE_SECTIONS } from '../src/lib/notice'
-import { buildFallbackAnswer, detectPersonalData, validateAskResponse } from '../src/lib/guideAsk'
+import { askPlan, buildFallbackAnswer, detectPersonalData, validateAskResponse } from '../src/lib/guideAsk'
+import { fetchAll } from '../src/lib/http'
+import { isRetryable, ProviderHttpError, redactProviderMessage } from '../src/lib/aiProvider'
 
 let passed = 0
 let failed = 0
@@ -40,7 +42,7 @@ console.log('\n— Tableau de bord par rôle —')
 {
   const g = buildScreenGuide('dashboard', facts('quality_manager', {
     tenantActions: { toApprove: 2, overdue: 0, firstToApproveId: 'x1' },
-    workflows: { published: 1, ownPublished: 0, toApprove: 0, myDrafts: 0 },
+    workflows: { published: 1, ownPublished: 0, ownInProgress: 0, toApprove: 0, myDrafts: 0 },
     team: { active: 3, executors: 1, qualityManagers: 1, internalAuditors: 0, suspended: 0 },
   }))
   assert('QM : « 2 actions soumises à valider » est la prochaine étape', g.next?.label === '2 actions soumises à valider', g.next?.label)
@@ -63,16 +65,16 @@ console.log('\n— Tableau de bord par rôle —')
 {
   const g = buildScreenGuide('dashboard', facts('process_owner', { nextAction: null }))
   assert('PO sans action : « Aucune action à exécuter » (done), pas de next', g.next === null && g.steps[0]?.status === 'done')
-  const admin = buildScreenGuide('dashboard', facts('tenant_admin', { nextAction: null, workflows: { published: 1, ownPublished: 0, toApprove: 0, myDrafts: 0 } }))
+  const admin = buildScreenGuide('dashboard', facts('tenant_admin', { nextAction: null, workflows: { published: 1, ownPublished: 0, ownInProgress: 0, toApprove: 0, myDrafts: 0 } }))
   assert('Admin sans action assignée : pas de ligne « Aucune action à exécuter »', !admin.steps.some((s) => s.id === 'my-actions-none'))
   assert('Workflow global publié : pas d’étape « Publier un premier workflow »', !admin.steps.some((s) => s.id === 'publish-workflow'))
-  const wf = buildScreenGuide('workflows', facts('quality_manager', { workflows: { published: 1, ownPublished: 0, toApprove: 0, myDrafts: 0 } }))
+  const wf = buildScreenGuide('workflows', facts('quality_manager', { workflows: { published: 1, ownPublished: 0, ownInProgress: 0, toApprove: 0, myDrafts: 0 } }))
   assert('Bibliothèque : adapter le workflow global tant qu’aucun workflow propre n’est publié', wf.next?.id === 'wf-duplicate')
 }
 {
   const g = buildScreenGuide('dashboard', facts('tenant_admin', {
     team: { active: 1, executors: 0, qualityManagers: 0, internalAuditors: 0, suspended: 0 },
-    workflows: { published: 1, ownPublished: 0, toApprove: 0, myDrafts: 0 },
+    workflows: { published: 1, ownPublished: 0, ownInProgress: 0, toApprove: 0, myDrafts: 0 },
     tenantActions: { toApprove: 0, overdue: 0, firstToApproveId: null },
   }))
   assert('Admin : inviter un QM en premier', g.next?.id === 'team-qm')
@@ -151,5 +153,56 @@ console.log('\n— Notice et question libre —')
   assert('repli sans section : renvoie aux étapes du guide, confiance basse', fb2.confidence_label === 'low' && fb2.steps.length > 0)
 }
 
-console.log(`\n${passed} ✓ / ${failed} ✗`)
-if (failed > 0) process.exit(1)
+async function runAsync() {
+  console.log('\n— Lecture des données du guide (erreurs, pagination) —')
+  {
+    // Erreur base : elle LÈVE (le guide répond « indisponible ») au lieu de passer pour une liste vide
+    let threw = false
+    try {
+      await fetchAll(async () => ({ data: null, error: { message: 'timeout' } }))
+    } catch (e: any) {
+      threw = e.message === 'timeout'
+    }
+    assert('erreur base : levée, jamais « rien à faire »', threw)
+
+    // 2 500 lignes : tout est lu par pages de 1 000 (PostgREST plafonne une réponse à 1 000 lignes)
+    const table = Array.from({ length: 2500 }, (_, i) => ({ id: i }))
+    const pages: [number, number][] = []
+    const { rows, truncated } = await fetchAll(async (from, to) => {
+      pages.push([from, to])
+      return { data: table.slice(from, to + 1), error: null }
+    })
+    assert('pagination : 2 500 lignes lues en 3 pages', rows.length === 2500 && pages.length === 3 && !truncated, `${rows.length} lignes, ${pages.length} pages`)
+  }
+}
+
+console.log('\n— Quota IA et réponse de la notice —')
+{
+  const limits = { user: 30, tenant: 500 }
+  const none = askPlan(false, null, limits)
+  assert('sans fournisseur : pas d’appel IA, pas de quota, réponse notice', !none.callAi && none.warning === null)
+  const user = askPlan(true, 'user', limits)
+  assert('quota utilisateur atteint : réponse notice (pas de refus 429), avec avertissement', !user.callAi && (user.warning ?? '').includes('30 demandes par heure'))
+  const tenant = askPlan(true, 'tenant', limits)
+  assert('quota tenant atteint : réponse notice avec avertissement', !tenant.callAi && (tenant.warning ?? '').includes('500 demandes par jour'))
+  assert('quota disponible : la question part au fournisseur', askPlan(true, null, limits).callAi)
+}
+
+console.log('\n— Appels fournisseur —')
+{
+  assert('401 / 429 : pas de nouvel essai (erreur définitive)', !isRetryable(new ProviderHttpError(401, '')) && !isRetryable(new ProviderHttpError(429, '')))
+  assert('500 / réseau : un nouvel essai', isRetryable(new ProviderHttpError(503, '')) && isRetryable(new Error('fetch failed')))
+  const red = redactProviderMessage('Incorrect API key provided: sk-proj-abCD****wxyz. You can find your API key at https://platform.openai.com')
+  assert('message fournisseur : fragment de clé masqué', !red.includes('abCD') && !red.includes('wxyz') && red.includes('[masquée]'))
+  assert('message fournisseur : clé sk-… isolée masquée', redactProviderMessage('bad key sk-live-1234abcd') === 'bad key [clé masquée]')
+}
+
+{
+  const wfDraft = buildScreenGuide('workflows', facts('quality_manager', { workflows: { published: 1, ownPublished: 0, ownInProgress: 1, toApprove: 0, myDrafts: 1 } }))
+  assert('workflow global déjà dupliqué : plus d’étape « Adapter le workflow global »', !wfDraft.steps.some((s) => s.id === 'wf-duplicate') && wfDraft.next?.id === 'wf-drafts')
+}
+
+void runAsync().then(() => {
+  console.log(`\n${passed} ✓ / ${failed} ✗`)
+  if (failed > 0) process.exit(1)
+})

@@ -58,7 +58,7 @@ export interface GuideFacts {
   tenantActions?: { toApprove: number; overdue: number; firstToApproveId: string | null }
   team?: { active: number; executors: number; qualityManagers: number; internalAuditors: number; suspended: number }
   /** published : utilisables pour lancer une action (globaux compris) ; ownPublished : propres au tenant. */
-  workflows?: { published: number; ownPublished: number; toApprove: number; myDrafts: number }
+  workflows?: { published: number; ownPublished: number; ownInProgress: number; toApprove: number; myDrafts: number }
   documents?: { published: number; toApprove: number; myDrafts: number; myInReview: number }
   nc?: { open: number; withoutCapa: number; capaOverdue: number }
   matrix?: { applicable: number; blocking: number; toReview: number; naPending: number }
@@ -328,7 +328,7 @@ export function buildScreenGuide(screen: GuideScreen, f: GuideFacts): ScreenGuid
       if (w && has('workflow.approve')) steps.push(counted('wf-approve', w.toApprove, `Relire et approuver ${plural(w.toApprove, 'workflow', 'workflows')} en revue`, 'Aucun workflow en attente d’approbation', { detail: 'Approuver (publication) ou Rejeter avec un motif ; on n’approuve pas son propre brouillon.' }))
       if (w && has('workflow.create')) {
         if (w.myDrafts > 0) steps.push({ id: 'wf-drafts', status: 'todo', count: w.myDrafts, label: `Finaliser et soumettre ${plural(w.myDrafts, 'brouillon', 'brouillons')}`, detail: 'Éditer : nom, clause, fréquence, actions et étapes ; puis Soumettre en revue.' })
-        if (w.ownPublished === 0) steps.push({ id: 'wf-duplicate', status: 'todo', label: 'Adapter le workflow global à votre entreprise', detail: 'Icône Dupliquer + motif sur le workflow « global » : une copie Brouillon est créée.' })
+        if (w.ownPublished === 0 && w.ownInProgress === 0) steps.push({ id: 'wf-duplicate', status: 'todo', label: 'Adapter le workflow global à votre entreprise', detail: 'Icône Dupliquer + motif sur le workflow « global » : une copie Brouillon est créée.' })
       }
       if (!has('workflow.create')) steps.push({ id: 'wf-read', status: 'info', label: 'Consultez les workflows publiés', detail: 'Ils décrivent les actions que vous pourrez recevoir et leurs étapes.' })
       break
