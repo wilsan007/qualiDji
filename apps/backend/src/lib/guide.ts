@@ -99,6 +99,33 @@ const MANUAL: Record<GuideScreen, string[]> = {
 /** Sections de la notice réservées à un rôle qui détient la permission (les autres restent pour tous). */
 const SECTION_PERMISSION: Record<string, string> = { '6.1': 'action.assign', '6.2': 'action.execute', '6.3': 'action.approve' }
 
+/**
+ * Permission(s) requise(s) pour OUVRIR chaque écran — miroir de NAV_ITEMS (frontend, lib/navigation.ts).
+ * Un écran sans entrée est ouvert à tout rôle de tenant. `anyPerm` : au moins une des permissions.
+ */
+export const SCREEN_ACCESS: Record<GuideScreen, { perm?: string; anyPerm?: string[] }> = {
+  dashboard: {},
+  workflow: {},
+  action: {},
+  nc: {},
+  audit: { perm: 'audit.export' },
+  matrice: {},
+  workflows: { perm: 'workflow.read' },
+  users: { perm: 'user.manage' },
+  reports: { perm: 'action.approve' },
+  documents: { perm: 'document.read' },
+  audits: { anyPerm: ['internal_audit.manage', 'internal_audit.respond'] },
+  reviews: { perm: 'management_review.manage' },
+}
+
+/** Le rôle peut-il ouvrir cet écran ? Sinon le guide n'a pas à lui répondre (même règle que le menu). */
+export function canOpenScreen(screen: GuideScreen, permissions: Set<string>): boolean {
+  const { perm, anyPerm } = SCREEN_ACCESS[screen]
+  if (perm && !permissions.has(perm)) return false
+  if (anyPerm && !anyPerm.some((p) => permissions.has(p))) return false
+  return true
+}
+
 /** Libellés des rôles, alignés sur le frontend (lib/format.ts). */
 export const ROLE_LABELS: Record<string, string> = {
   super_admin: 'Super administrateur',
