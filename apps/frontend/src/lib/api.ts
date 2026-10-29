@@ -11,6 +11,30 @@ async function getToken() {
   return data.session?.access_token
 }
 
+/**
+ * Démarrage à froid du Worker Cloudflare : la première requête après une période d'inactivité peut
+ * recevoir une page d'erreur du réseau Cloudflare (texte « error code: 1105 », ou page HTML) avant
+ * que l'application ait répondu. L'API, elle, répond toujours en JSON : ce n'est donc pas une erreur
+ * métier. Seuls les GET (sans effet de bord) sont rejoués automatiquement.
+ */
+const COLD_START_DELAYS_MS = [1500, 3000, 6000]
+export const COLD_START_MESSAGE = 'Le service démarre : réessayez dans quelques secondes.'
+
+async function isEdgeColdStartError(res: Response): Promise<boolean> {
+  if (res.ok || res.status < 500) return false
+  const text = await res.clone().text().catch(() => '')
+  if (/error code:\s*1105/i.test(text)) return true
+  return /<html/i.test(text) && /cloudflare/i.test(text)
+}
+
+/** Réveille le serveur dès l'ouverture de la page : le démarrage à froid se fait pendant que l'utilisateur se connecte. */
+export function warmUpApi(): void {
+  const base = API_BASE.replace(/\/api\/v1\/?$/, '')
+  void fetch(`${base}/health`, { cache: 'no-store' }).catch(() => {
+    /* sans effet : la première vraie requête réessaiera */
+  })
+}
+
 export async function apiFetch(path: string, options: RequestInit = {}) {
   const token = await getToken()
   const headers: Record<string, string> = {
@@ -19,7 +43,19 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
   }
   if (token) headers.Authorization = `Bearer ${token}`
 
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers })
+  const method = (options.method ?? 'GET').toUpperCase()
+  const send = () => fetch(`${API_BASE}${path}`, { ...options, headers })
+  let res = await send()
+  if (!res.ok && (await isEdgeColdStartError(res))) {
+    if (method === 'GET' || method === 'HEAD') {
+      for (const delay of COLD_START_DELAYS_MS) {
+        await new Promise((resolve) => setTimeout(resolve, delay))
+        res = await send()
+        if (res.ok || !(await isEdgeColdStartError(res))) break
+      }
+    }
+    if (!res.ok && (await isEdgeColdStartError(res))) throw new Error(COLD_START_MESSAGE)
+  }
   if (res.status === 401 && token) {
     // M10 : session expirée ou révoquée — déconnexion centralisée puis retour à la connexion.
     const { useAuthStore } = await import('@/stores/auth')
@@ -33,7 +69,6 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
   }
   // Une écriture réussie peut changer « ce qu'il faut faire » : le guide contextuel se recalcule
   // (sauf ses propres appels et la lecture des notifications, qui ne changent rien à faire).
-  const method = (options.method ?? 'GET').toUpperCase()
   if (method !== 'GET' && !/^\/(guide|notifications)\b/.test(path) && typeof window !== 'undefined') {
     window.dispatchEvent(new Event(GUIDE_REFRESH_EVENT))
   }
