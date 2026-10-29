@@ -4,7 +4,7 @@
  * lib/notice.ts et lib/guideAsk.ts.
  * Exécution : pnpm --filter @iso/backend test:guide
  */
-import { buildScreenGuide, GUIDE_SCREENS, GuideFacts, ActionFact, isCacheFresh } from '../src/lib/guide'
+import { buildScreenGuide, canOpenScreen, GUIDE_SCREENS, GuideFacts, ActionFact, isCacheFresh, SCREEN_ACCESS } from '../src/lib/guide'
 import { searchNotice, NOTICE_SECTIONS } from '../src/lib/notice'
 import { askPlan, buildFallbackAnswer, detectPersonalData, validateAskResponse } from '../src/lib/guideAsk'
 import { fetchAll } from '../src/lib/http'
@@ -209,6 +209,21 @@ console.log('\n— Cache des compteurs de la matrice —')
   assert('cache : une ligne de matrice modifiée (empreinte différente) → recalcul', !isCacheFresh(entry, '54@a2|108@b|0@null', 2_000, 300_000))
   assert('cache : entrée trop vieille → recalcul', !isCacheFresh(entry, '54@a|108@b|0@null', 1_000 + 300_000, 300_000))
   assert('cache : aucune entrée → recalcul', !isCacheFresh(undefined, 'x', 0, 300_000))
+}
+
+console.log('\n— Accès aux écrans (même règle que le menu) —')
+{
+  const open = (role: string) => GUIDE_SCREENS.filter((s) => canOpenScreen(s, new Set(PERMS[role])))
+  const closed = (role: string) => GUIDE_SCREENS.filter((s) => !canOpenScreen(s, new Set(PERMS[role])))
+  assert('chaque écran du guide a une règle d’accès', GUIDE_SCREENS.every((s) => s in SCREEN_ACCESS))
+  assert('Admin tenant : les 12 écrans', open('tenant_admin').length === GUIDE_SCREENS.length, closed('tenant_admin').join(','))
+  assert('QM : pas Utilisateurs (user.manage), tout le reste', closed('quality_manager').join(',') === 'users', closed('quality_manager').join(','))
+  assert('PO : ni Prêt audit, ni Utilisateurs, ni Rapports, ni Revues direction', closed('process_owner').sort().join(',') === ['audit', 'reports', 'reviews', 'users'].sort().join(','), closed('process_owner').join(','))
+  assert('PO : garde Audits internes (réponse aux constats), Documents, Bibliothèque WF', ['audits', 'documents', 'workflows'].every((s) => open('process_owner').includes(s as never)))
+  assert('Auditeur interne : Prêt audit et Audits internes, pas Rapports ni Revues ni Utilisateurs', open('internal_auditor').includes('audit' as never) && open('internal_auditor').includes('audits' as never) && ['reports', 'reviews', 'users'].every((s) => closed('internal_auditor').includes(s as never)))
+  assert('Lecteur : pas Audits internes', closed('reader').includes('audits' as never))
+  assert('écrans communs ouverts à tous : tableau de bord, actions, NC, matrice', ['dashboard', 'workflow', 'action', 'nc', 'matrice'].every((s) => ['tenant_admin', 'quality_manager', 'process_owner', 'internal_auditor', 'reader'].every((r) => open(r).includes(s as never))))
+  assert('sans aucune permission : seuls les écrans communs restent', GUIDE_SCREENS.filter((s) => canOpenScreen(s, new Set())).sort().join(',') === ['action', 'dashboard', 'matrice', 'nc', 'workflow'].sort().join(','))
 }
 
 void runAsync().then(() => {

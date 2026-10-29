@@ -1,12 +1,12 @@
 import { Router } from 'express'
-import type { Router as ExpressRouter } from 'express'
+import type { Router as ExpressRouter, Response } from 'express'
 import { z } from 'zod'
 import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '../middleware/auth'
 import { supabaseAdmin } from '../lib/supabase'
 import { isPlatformAdmin, canSeeAllActions } from '../lib/access'
 import { fetchAll } from '../lib/http'
 import {
-  ActionFact, buildScreenGuide, CachedFacts, GUIDE_SCREENS, GuideFacts, GuideScreen, isCacheFresh, ROLE_LABELS,
+  ActionFact, buildScreenGuide, CachedFacts, canOpenScreen, GUIDE_SCREENS, GuideFacts, GuideScreen, isCacheFresh, ROLE_LABELS,
 } from '../lib/guide'
 import { noticeSection, searchNotice } from '../lib/notice'
 import {
@@ -40,6 +40,15 @@ async function permissionsOf(req: AuthedRequest): Promise<Set<string>> {
     return new Set(rows.map((p) => p.code))
   }
   return req.permissions ?? new Set()
+}
+
+/** Le rôle de l'appelant peut-il ouvrir cet écran ? (même règle que le menu, lib/guide.ts SCREEN_ACCESS) */
+async function mayOpenScreen(req: AuthedRequest, screen: GuideScreen): Promise<boolean> {
+  return canOpenScreen(screen, await permissionsOf(req))
+}
+
+function denyScreen(res: Response) {
+  return res.status(403).json({ error: "votre rôle n'a pas accès à cet écran", code: 'ERR_PERMISSION_DENIED' })
 }
 
 async function loadTeam(tenantId: string): Promise<NonNullable<GuideFacts['team']>> {
@@ -290,6 +299,7 @@ router.get('/', requireAuth, requireTenant, requirePermission('tenant.read'), as
   const parsed = guideQuery.safeParse(req.query)
   if (!parsed.success) return res.status(400).json({ error: 'écran inconnu', code: 'ERR_INVALID_INPUT', details: parsed.error.flatten() })
   try {
+    if (!(await mayOpenScreen(req, parsed.data.screen))) return denyScreen(res)
     const facts = await loadFacts(req, parsed.data.screen, parsed.data.actionId ?? null)
     const guide = buildScreenGuide(parsed.data.screen, facts)
     res.json({
@@ -315,6 +325,9 @@ router.post('/ask', requireAuth, requireTenant, requirePermission('tenant.read')
   const { screen, actionId, question } = parsed.data
   const tenantId = req.user!.tenant_id!
   const userId = req.user!.id
+
+  // Écran fermé à ce rôle : refus avant tout traitement (ni quota consommé, ni appel au fournisseur)
+  if (!(await mayOpenScreen(req, screen))) return denyScreen(res)
 
   // Données personnelles : refusées avant tout traitement — rien n'est envoyé ni stocké
   const personal = detectPersonalData(question)
