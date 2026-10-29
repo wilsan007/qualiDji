@@ -7,16 +7,17 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
  * Layout applicatif — navigation RBAC, bandeau hors-ligne (§13),
  * cloche de notifications et déconnexion.
  */
-const { mockNotificationsApi, mockUseOnlineStatus } = vi.hoisted(() => ({
+const { mockNotificationsApi, mockUseOnlineStatus, mockGuideApi } = vi.hoisted(() => ({
   mockNotificationsApi: {
     list: vi.fn(),
     markRead: vi.fn(),
     markAllRead: vi.fn(),
   },
   mockUseOnlineStatus: vi.fn(),
+  mockGuideApi: { get: vi.fn(), ask: vi.fn() },
 }))
 
-vi.mock('@/lib/api', () => ({ notificationsApi: mockNotificationsApi }))
+vi.mock('@/lib/api', () => ({ notificationsApi: mockNotificationsApi, guideApi: mockGuideApi, GUIDE_REFRESH_EVENT: 'qualidji:data-changed' }))
 vi.mock('@/hooks/useOnlineStatus', () => ({ useOnlineStatus: mockUseOnlineStatus }))
 
 import Layout from '@/components/Layout'
@@ -50,6 +51,11 @@ describe('Layout', () => {
     mockNotificationsApi.markRead.mockResolvedValue({})
     mockNotificationsApi.markAllRead.mockResolvedValue({})
     mockUseOnlineStatus.mockReturnValue({ online: true, pending: 0 })
+    mockGuideApi.get.mockResolvedValue({
+      guide: { screen: 'dashboard', role: 'quality_manager', title: 'Tableau de bord', purpose: 'Point de départ.', steps: [], next: null, manual: [] },
+      role_label: 'Responsable qualité',
+      manual: [],
+    })
   })
 
   it('affiche la navigation publique et le titre de page', async () => {

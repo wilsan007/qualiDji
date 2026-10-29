@@ -9,6 +9,7 @@ dotenv.config()
 import { actionsRouter } from './routes/actions'
 import { stepsRouter } from './routes/steps'
 import { aiRouter } from './routes/ai'
+import { guideRouter } from './routes/guide'
 import { evidenceRouter } from './routes/evidence'
 import { nonconformitiesRouter } from './routes/nonconformities'
 import { dashboardRouter } from './routes/dashboard'
@@ -100,6 +101,7 @@ app.use('/api/v1/auth', (req, res) => {
 app.use('/api/v1/actions', actionsRouter)
 app.use('/api/v1/steps', stepsRouter)
 app.use('/api/v1/ai', aiRouter)
+app.use('/api/v1/guide', guideRouter)
 app.use('/api/v1/evidence', evidenceRouter)
 app.use('/api/v1/nonconformities', nonconformitiesRouter)
 app.use('/api/v1/dashboard', dashboardRouter)

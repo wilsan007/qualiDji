@@ -215,3 +215,27 @@ describe('lib/api — preuves (C3)', () => {
     await expect(evidenceApi.upload('a1', undefined, new File(['<b>'], 'x.html', { type: 'text/html' }))).rejects.toThrow('type non autorisé')
   })
 })
+
+describe('lib/api — recalcul du guide contextuel', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+  })
+
+  it('une écriture métier réussie déclenche le recalcul ; la lecture d’une notification et le guide lui-même non', async () => {
+    const onChange = vi.fn()
+    window.addEventListener('qualidji:data-changed', onChange)
+    try {
+      await apiFetch('/actions/a1/submit', { method: 'POST' })
+      expect(onChange).toHaveBeenCalledTimes(1)
+      await apiFetch('/notifications/n1/read', { method: 'POST' })
+      await apiFetch('/notifications/read-all', { method: 'POST' })
+      await apiFetch('/guide/ask', { method: 'POST' })
+      await apiFetch('/actions/a1')
+      expect(onChange).toHaveBeenCalledTimes(1)
+    } finally {
+      window.removeEventListener('qualidji:data-changed', onChange)
+    }
+  })
+})

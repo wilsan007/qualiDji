@@ -50,3 +50,26 @@ export function parseBody<S extends z.ZodTypeAny>(schema: S, body: unknown, res:
   }
   return parsed.data
 }
+
+const PAGE = 1000
+/** Plafond de sécurité : au-delà, le résultat est marqué `truncated` (les agrégats ne sont plus exacts). */
+const MAX_ROWS = 20_000
+
+/**
+ * Lit toutes les lignes d'une requête par pages (PostgREST plafonne une réponse à 1000 lignes)
+ * et LÈVE en cas d'erreur base — jamais de liste vide silencieuse (rapports M4, guide contextuel).
+ * La requête construite doit avoir un ordre stable (ex. .order('id')) pour que la pagination soit exacte.
+ */
+export async function fetchAll<T>(
+  build: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+): Promise<{ rows: T[]; truncated: boolean }> {
+  const rows: T[] = []
+  for (let from = 0; from < MAX_ROWS; from += PAGE) {
+    const { data, error } = await build(from, from + PAGE - 1)
+    if (error) throw new Error(error.message)
+    rows.push(...(data ?? []))
+    if ((data ?? []).length < PAGE) return { rows, truncated: false }
+  }
+  return { rows, truncated: true }
+}
+

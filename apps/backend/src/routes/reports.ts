@@ -4,6 +4,7 @@ import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '..
 import { supabaseAdmin } from '../lib/supabase'
 import { emailMap } from '../lib/authUsers'
 import { auditFromReq } from '../lib/audit'
+import { fetchAll } from '../lib/http'
 
 /**
  * Module H — Rapports et préparation d'audit (V5 §5.8).
@@ -35,25 +36,8 @@ function esc(v: unknown): string {
 
 const emailsById = emailMap
 
-const PAGE = 1000
-/** Plafond de sécurité : au-delà, le rapport est marqué `truncated` (les agrégats ne sont plus exacts). */
-const MAX_ROWS = 20_000
 /** Rapports JSON : lignes détaillées renvoyées (les totaux/agrégats portent, eux, sur TOUTES les lignes). */
 const JSON_ROWS = 500
-
-/** Lit toutes les lignes d'une requête par pages (M4 : les totaux étaient calculés sur 500 lignes seulement). */
-async function fetchAll<T>(
-  build: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
-): Promise<{ rows: T[]; truncated: boolean }> {
-  const rows: T[] = []
-  for (let from = 0; from < MAX_ROWS; from += PAGE) {
-    const { data, error } = await build(from, from + PAGE - 1)
-    if (error) throw new Error(error.message)
-    rows.push(...(data ?? []))
-    if ((data ?? []).length < PAGE) return { rows, truncated: false }
-  }
-  return { rows, truncated: true }
-}
 
 interface ActionFilters {
   status?: string

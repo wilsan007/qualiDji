@@ -1,6 +1,7 @@
 // Déploiement Cloudflare : UN Worker sert le frontend (fichiers statiques Vite) et l'API Express.
 // Même origine pour l'interface et l'API → pas de CORS entre les deux.
 // Secrets (jamais ici) : wrangler secret put SUPABASE_SERVICE_ROLE_KEY | SUPABASE_URL | SUPABASE_ANON_KEY
+// IA (facultatif) : wrangler secret put AI_API_KEY | AI_PROVIDER_URL | AI_MODEL — voir docs/DEPLOIEMENT.md §13
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "qualidji",
@@ -17,7 +18,11 @@
   },
   "vars": {
     // Cloudflare ajoute X-Forwarded-For : un proxy à faire confiance pour req.ip (limitation de débit)
-    "TRUST_PROXY": "1"
+    "TRUST_PROXY": "1",
+    // Fournisseur IA (non secret) : OpenAI. L'IA ne s'active qu'une fois la clé posée :
+    //   npx wrangler secret put AI_API_KEY   (jamais dans ce fichier)
+    "AI_PROVIDER_URL": "https://api.openai.com/v1",
+    "AI_MODEL": "gpt-4o-mini"
   },
   "observability": { "enabled": true }
 }
