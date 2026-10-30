@@ -108,6 +108,16 @@ router.post('/invite', requireAuth, requireTenant, requirePermission('user.manag
       return res.status(409).json({ error: `utilisateur déjà existant: ${email}` })
     }
     console.error('[users] invite:', msg)
+    // Quota d'e-mails du fournisseur (GoTrue cloud ~1/h) : erreur TEMPORAIRE et
+    // réessayable — 429 avec code distinct, pour ne pas masquer un problème
+    // transitoire derrière un 400 « refus définitif » (E2E distant PV §6.1).
+    if (/rate limit|too many|over_email_send_rate|429/i.test(msg)) {
+      res.setHeader('Retry-After', '3600')
+      return res.status(429).json({
+        error: "quota d'envoi d'e-mails du fournisseur d'identité atteint — réessayer plus tard",
+        code: 'ERR_INVITE_RATE_LIMIT',
+      })
+    }
     return res.status(400).json({ error: "invitation refusée par le fournisseur d'identité", code: 'ERR_INVITE' })
   }
   const uid = invited.user?.id
