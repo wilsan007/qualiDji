@@ -209,6 +209,46 @@ grep -q 'ERR_NA_ALREADY_APPROVED' "$BODY_FILE" && { PASS=$((PASS + 1)); echo "  
 NA_REG=$(curl -s -m 20 "$API_URL/matrix/na-register" -H "Authorization: Bearer $QM_TOKEN" | python3 -c "import sys,json;r=[x for x in json.load(sys.stdin).get('register',[]) if x['requirement_id']=='$NA_REQ'];print('oui' if r and r[0].get('justification') and r[0].get('approved_by') and r[0].get('approved_by')!='Marie Dupont, RQ' else 'non')" 2>/dev/null)
 expect_eq "registre N.10 : justification + approbateur (posé par le serveur, jamais saisi)" "$NA_REG" oui
 
+echo "-- Carte exigences ↔ workflows par entreprise (migration 0020 ; avertissement, jamais bloquant) --"
+if [ "${EXPECT_LINKS_DB:-${EXPECT_HARDENED_DB:-}}" = "1" ]; then
+  LINK_REQ=ISO9001-2026-5.2
+  LINKS_PATH="/matrix/requirements/$LINK_REQ/links"
+  req_field() { curl -s -m 20 "$API_URL/matrix/requirements" -H "Authorization: Bearer $1" | python3 -c "import sys,json;r=next((x for x in json.load(sys.stdin).get('requirements',[]) if x['id']=='$LINK_REQ'),{});print($2)" 2>/dev/null; }
+  body_field() { python3 -c "import json,sys;r=json.load(open(sys.argv[1])).get('requirement',{});print($1)" "$BODY_FILE" 2>/dev/null; }
+
+  expect_eq "avant : exigence 5.2 non couverte par un workflow publié → 1 avertissement" "$(req_field "$QM_TOKEN" "len(r.get('warnings',[]))")" 1
+  STATE_BEFORE="$(req_field "$QM_TOKEN" "(r.get('gap_status'), r.get('blocking'), tuple(r.get('blocking_reasons',[])))")"
+
+  check 'OP POST links → 403 workflow.edit_draft'                  403 "$OP_TOKEN" POST "$LINKS_PATH" '{"kind":"module","module":"audits","reason":"E2E lien module"}'
+  check 'QM POST links sans motif → 400'                           400 "$QM_TOKEN" POST "$LINKS_PATH" '{"kind":"module","module":"audits"}'
+  check 'QM POST links module inconnu → 400'                       400 "$QM_TOKEN" POST "$LINKS_PATH" '{"kind":"module","module":"inconnu","reason":"E2E module inconnu"}'
+  check 'QM POST links vers un workflow inexistant → 400'          400 "$QM_TOKEN" POST "$LINKS_PATH" '{"kind":"workflow","workflow_family":"WF_N_EXISTE_PAS","reason":"E2E workflow inexistant"}'
+  grep -q 'ERR_LINK_TARGET' "$BODY_FILE" && { PASS=$((PASS + 1)); echo "  ✓ … code ERR_LINK_TARGET"; } || { FAIL=$((FAIL + 1)); echo "  ✗ … code ERR_LINK_TARGET absent"; }
+  check 'QM POST links sur une exigence inconnue → 404'            404 "$QM_TOKEN" POST "/matrix/requirements/ISO9001-2026-0.0/links" '{"kind":"module","module":"audits","reason":"E2E exigence inconnue"}'
+  check 'QM écarte une suggestion absente du catalogue de 5.2 → 400' 400 "$QM_TOKEN" POST "$LINKS_PATH" '{"kind":"exclusion","workflow_family":"WF_CONTEXT_ANALYSIS","reason":"E2E suggestion absente"}'
+
+  check 'QM POST lien module « audits » → 201'                     201 "$QM_TOKEN" POST "$LINKS_PATH" '{"kind":"module","module":"audits","reason":"E2E programme d audit"}'
+  LINK_ID="$(body_field "next((l['id'] for l in r.get('links',[]) if l.get('kind')=='module' and l.get('target')=='audits' and l.get('origin')=='tenant'),'')")"
+  expect_eq "le lien module couvre l'exigence : plus d'avertissement" "$(body_field "len(r.get('warnings',[]))")" 0
+  expect_eq "le lien NE change PAS le statut de couverture ni le blocage" "$(body_field "(r.get('gap_status'), r.get('blocking'), tuple(r.get('blocking_reasons',[])))")" "$STATE_BEFORE"
+  check 'QM POST le même lien → 409'                               409 "$QM_TOKEN" POST "$LINKS_PATH" '{"kind":"module","module":"audits","reason":"E2E doublon"}'
+  grep -q 'ERR_LINK_EXISTS' "$BODY_FILE" && { PASS=$((PASS + 1)); echo "  ✓ … code ERR_LINK_EXISTS"; } || { FAIL=$((FAIL + 1)); echo "  ✗ … code ERR_LINK_EXISTS absent"; }
+  expect_eq "isolation : le tenant B ne voit pas le lien du tenant A" "$(req_field "$B_QM_TOKEN" "any(l.get('origin')=='tenant' for l in r.get('links',[]))")" False
+  check 'B POST remove du lien de A → 404 (isolation inter-tenants)' 404 "$B_QM_TOKEN" POST "$LINKS_PATH/$LINK_ID/remove" '{"reason":"E2E tentative inter-tenants"}'
+  check 'QM POST remove sans motif → 400'                           400 "$QM_TOKEN" POST "$LINKS_PATH/$LINK_ID/remove" '{}'
+  check 'QM POST remove avec motif → 200'                          200 "$QM_TOKEN" POST "$LINKS_PATH/$LINK_ID/remove" '{"reason":"E2E retrait du lien"}'
+  expect_eq "après le retrait : l'avertissement revient" "$(body_field "len(r.get('warnings',[]))")" 1
+  check 'QM POST remove du lien déjà retiré → 404'                 404 "$QM_TOKEN" POST "$LINKS_PATH/$LINK_ID/remove" '{"reason":"E2E déjà retiré"}'
+
+  check 'QM écarte la suggestion WF_POLICY_MANAGEMENT de 5.2 → 201' 201 "$QM_TOKEN" POST "$LINKS_PATH" '{"kind":"exclusion","workflow_family":"WF_POLICY_MANAGEMENT","reason":"E2E suggestion écartée"}'
+  EXCL_ID="$(body_field "next((x['id'] for x in r.get('excluded_suggestions',[]) if x.get('target')=='WF_POLICY_MANAGEMENT'),'')")"
+  expect_eq "suggestion écartée : absente des liens, listée dans les exclusions" "$(body_field "(any(l.get('target')=='WF_POLICY_MANAGEMENT' for l in r.get('links',[])), len(r.get('excluded_suggestions',[])))")" "(False, 1)"
+  check 'QM rétablit la suggestion (retrait de l exclusion) → 200' 200 "$QM_TOKEN" POST "$LINKS_PATH/$EXCL_ID/remove" '{"reason":"E2E rétablissement"}'
+  expect_eq "suggestion rétablie dans la carte effective" "$(body_field "any(l.get('target')=='WF_POLICY_MANAGEMENT' and l.get('origin')=='suggestion' for l in r.get('links',[]))")" True
+else
+  echo "  ○ ignoré (EXPECT_LINKS_DB / EXPECT_HARDENED_DB non définis : migration 0020 requise)"
+fi
+
 echo "-- tenant.read (migration 0007) --"
 check 'OP GET /tenants/me → 200 tenant.read'                   200        "$OP_TOKEN"  GET /tenants/me
 check 'QM GET /tenants/me → 200'                               200        "$QM_TOKEN"  GET /tenants/me

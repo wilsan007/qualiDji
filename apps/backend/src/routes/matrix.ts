@@ -5,6 +5,10 @@ import { z } from 'zod'
 import { supabaseAdmin } from '../lib/supabase'
 import { writeAudit } from '../lib/audit'
 import { dbFail, parseBody } from '../lib/http'
+import {
+  baseCode, buildEffectiveLinks, EffectiveLink, ExcludedSuggestion, familiesFromDefinitions, LINK_MODULES, linkWarnings,
+  TenantLinkRow, WorkflowDef,
+} from '../lib/requirementLinks'
 
 // ============================================================================
 // Matrice de traçabilité ISO 9001:2026 — Cahier des charges V4, annexes K & L
@@ -80,7 +84,14 @@ export interface ValidationRow {
 }
 
 export interface MatrixLine extends RequirementRow {
+  /** Familles de workflow de la carte EFFECTIVE (suggestions − écartées + liens de l'entreprise). */
   workflow_codes: string[]
+  /** Carte effective détaillée : origine, état (publié, brouillon, module…), motif. */
+  links: EffectiveLink[]
+  /** Suggestions du catalogue écartées par l'entreprise (rétablissables). */
+  excluded_suggestions: ExcludedSuggestion[]
+  /** Avertissements NON bloquants (jamais comptés dans blocking / blocking_reasons). */
+  warnings: string[]
   assessment: AssessmentRow | null
   tests: { positive: TestRow | null; negative: TestRow | null }
   gap_status: GapStatus
@@ -88,12 +99,17 @@ export interface MatrixLine extends RequirementRow {
   blocking_reasons: string[]
 }
 
+/** Table absente du schéma (migration 0020 pas encore appliquée) : Postgres 42P01 ou cache PostgREST PGRST205. */
+function isMissingTable(error: { code?: string } | null | undefined): boolean {
+  return error?.code === '42P01' || error?.code === 'PGRST205'
+}
+
 /** Charge le catalogue + les données tenant et calcule l'état de chaque ligne. */
 export async function loadMatrix(tenantId: string): Promise<{
   lines: MatrixLine[]
   validations: ValidationRow[]
 }> {
-  const [reqRes, mapRes, assessRes, testRes, validRes] = await Promise.all([
+  const [reqRes, mapRes, assessRes, testRes, validRes, linkRes, defRes] = await Promise.all([
     supabaseAdmin.from('requirements').select('*'),
     supabaseAdmin.from('workflow_requirement_map').select('workflow_code, requirement_id'),
     supabaseAdmin.from('requirement_assessments').select('*').eq('tenant_id', tenantId),
@@ -103,10 +119,21 @@ export async function loadMatrix(tenantId: string): Promise<{
       .select('id, matrix_version, perimeter, expert_name, expert_role, decision, reserves, decided_at')
       .eq('tenant_id', tenantId)
       .order('decided_at', { ascending: false }),
+    // Liens ACTIFS de l'entreprise (carte par entreprise, migration 0020)
+    supabaseAdmin
+      .from('tenant_requirement_links')
+      .select('id, requirement_id, kind, workflow_family, module, coverage_type, reason, created_at')
+      .eq('tenant_id', tenantId)
+      .is('removed_at', null),
+    // Workflows visibles de l'entreprise : bibliothèque globale + propres workflows
+    supabaseAdmin.from('workflow_definitions').select('id, name, status').or(`tenant_id.is.null,tenant_id.eq.${tenantId}`),
   ])
   if (reqRes.error) throw new Error(reqRes.error.message)
   if (assessRes.error) throw new Error(assessRes.error.message)
   if (testRes.error) throw new Error(testRes.error.message)
+  if (defRes.error) throw new Error(defRes.error.message)
+  // Déploiement du code avant la migration 0020 : la matrice reste lisible (carte globale seule).
+  if (linkRes.error && !isMissingTable(linkRes.error)) throw new Error(linkRes.error.message)
 
   const requirements: RequirementRow[] = (reqRes.data ?? []) as RequirementRow[]
   const maps: { workflow_code: string; requirement_id: string }[] = mapRes.data ?? []
@@ -114,12 +141,21 @@ export async function loadMatrix(tenantId: string): Promise<{
   const tests: TestRow[] = (testRes.data ?? []) as TestRow[]
   const validations: ValidationRow[] = (validRes.data ?? []) as ValidationRow[]
 
-  const workflowsByReq = new Map<string, string[]>()
+  // Suggestions du catalogue global par exigence ; liens de l'entreprise par exigence
+  const suggestionsByReq = new Map<string, string[]>()
   for (const m of maps) {
-    const list = workflowsByReq.get(m.requirement_id) ?? []
+    const list = suggestionsByReq.get(m.requirement_id) ?? []
     list.push(m.workflow_code)
-    workflowsByReq.set(m.requirement_id, list)
+    suggestionsByReq.set(m.requirement_id, list)
   }
+  const linkRows: TenantLinkRow[] = linkRes.error ? [] : ((linkRes.data ?? []) as TenantLinkRow[])
+  const linksByReq = new Map<string, TenantLinkRow[]>()
+  for (const l of linkRows) {
+    const list = linksByReq.get(l.requirement_id) ?? []
+    list.push(l)
+    linksByReq.set(l.requirement_id, list)
+  }
+  const families = familiesFromDefinitions((defRes.data ?? []) as WorkflowDef[])
   const assessByReq = new Map(assessments.map((a) => [a.requirement_id, a]))
   const testsByReq = new Map<string, { positive: TestRow | null; negative: TestRow | null }>()
   for (const t of tests) {
@@ -147,9 +183,14 @@ export async function loadMatrix(tenantId: string): Promise<{
       verification_method: assessment?.verification_method ?? r.verification_method,
     }
     const state = computeState(eff, assessment, lineTests, reservesPerimeters)
+    const { links, excluded } = buildEffectiveLinks(suggestionsByReq.get(r.id) ?? [], linksByReq.get(r.id) ?? [], families)
     return {
       ...eff,
-      workflow_codes: workflowsByReq.get(r.id) ?? [],
+      workflow_codes: links.filter((l) => l.kind === 'workflow').map((l) => l.target),
+      links,
+      excluded_suggestions: excluded,
+      // Avertissement seulement : n'entre jamais dans state.blocking ni state.reasons
+      warnings: linkWarnings(r, assessment?.applicability, links),
       assessment,
       tests: lineTests,
       gap_status: state.status,
@@ -495,6 +536,117 @@ router.patch(
   res.json({ requirement: lines.find((l) => l.id === id) ?? null })
 })
 
+// ---------------------------------------------------------------------------
+// Carte exigences ↔ workflows de l'entreprise (docs/ETUDE_CARTE_PAR_ENTREPRISE.md, option A).
+// Lien = traçabilité : il ne change JAMAIS le statut de couverture. Motif obligatoire (L.5),
+// journalisé ; un retrait garde l'historique (removed_at). Même droit que l'édition K.2.
+// ---------------------------------------------------------------------------
+const linkReason = z.string().trim().min(3, 'motif obligatoire (3 caractères min.)').max(1000)
+const familyCode = z.string().regex(/^[A-Z][A-Z0-9_]{2,63}$/, 'code attendu : MAJUSCULES, chiffres, _')
+const coverageType = z.enum(['primary', 'supporting']).default('primary')
+const linkBody = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('workflow'), workflow_family: familyCode, coverage_type: coverageType, reason: linkReason }),
+  z.object({ kind: z.literal('module'), module: z.enum(LINK_MODULES), coverage_type: coverageType, reason: linkReason }),
+  z.object({ kind: z.literal('exclusion'), workflow_family: familyCode, reason: linkReason }),
+])
+
+router.post(
+  '/requirements/:id/links',
+  requireAuth,
+  requireTenant,
+  requirePermission('workflow.edit_draft'),
+  async (req: AuthedRequest, res) => {
+    const tenantId = req.user!.tenant_id!
+    const { id } = req.params
+    const body = parseBody(linkBody, req.body, res)
+    if (!body) return
+
+    const { data: reqRow } = await supabaseAdmin.from('requirements').select('id').eq('id', id).maybeSingle()
+    if (!reqRow) return res.status(404).json({ error: 'Exigence introuvable.', code: 'ERR_NOT_FOUND' })
+
+    if (body.kind === 'workflow') {
+      // La famille doit exister dans la bibliothèque visible de l'entreprise (tous statuts)
+      const { data: defs, error: defErr } = await supabaseAdmin
+        .from('workflow_definitions')
+        .select('id')
+        .or(`tenant_id.is.null,tenant_id.eq.${tenantId}`)
+      if (defErr) return dbFail(res, defErr, 'matrix.link.defs', 500)
+      if (!(defs ?? []).some((d) => baseCode(d.id) === body.workflow_family)) {
+        return res.status(400).json({ error: `aucun workflow « ${body.workflow_family} » dans votre bibliothèque`, code: 'ERR_LINK_TARGET' })
+      }
+    }
+    if (body.kind === 'exclusion') {
+      // On n'écarte qu'une suggestion réellement présente dans le catalogue pour cette exigence
+      const { data: suggested } = await supabaseAdmin
+        .from('workflow_requirement_map')
+        .select('workflow_code')
+        .eq('requirement_id', id)
+        .eq('workflow_code', body.workflow_family)
+        .maybeSingle()
+      if (!suggested) {
+        return res.status(400).json({ error: "cette suggestion n'existe pas dans le catalogue pour cette exigence", code: 'ERR_LINK_TARGET' })
+      }
+    }
+
+    const target = body.kind === 'module' ? body.module : body.workflow_family
+    const { data: row, error } = await supabaseAdmin
+      .from('tenant_requirement_links')
+      .insert({
+        tenant_id: tenantId,
+        requirement_id: id,
+        kind: body.kind,
+        workflow_family: body.kind === 'module' ? null : body.workflow_family,
+        module: body.kind === 'module' ? body.module : null,
+        coverage_type: body.kind === 'exclusion' ? 'primary' : body.coverage_type,
+        reason: body.reason,
+        created_by: req.user!.id,
+      })
+      .select('id')
+      .single()
+    if (error) {
+      if (error.code === '23505') return res.status(409).json({ error: 'ce lien existe déjà pour cette exigence', code: 'ERR_LINK_EXISTS' })
+      return dbFail(res, error, 'matrix.link.add')
+    }
+
+    await auditMatrix(tenantId, req.user!.id, 'matrix.link.add', id, { link_id: row.id, kind: body.kind, target, reason: body.reason })
+    const { lines } = await loadMatrix(tenantId)
+    res.status(201).json({ requirement: lines.find((l) => l.id === id) ?? null })
+  },
+)
+
+// Retrait d'un lien (ou rétablissement d'une suggestion écartée = retrait de l'exclusion) — motif obligatoire
+router.post(
+  '/requirements/:id/links/:linkId/remove',
+  requireAuth,
+  requireTenant,
+  requirePermission('workflow.edit_draft'),
+  async (req: AuthedRequest, res) => {
+    const tenantId = req.user!.tenant_id!
+    const { id, linkId } = req.params
+    const body = parseBody(z.object({ reason: linkReason }), req.body, res)
+    if (!body) return
+    if (!z.string().uuid().safeParse(linkId).success) return res.status(404).json({ error: 'Lien introuvable.', code: 'ERR_NOT_FOUND' })
+
+    const { data: removed, error } = await supabaseAdmin
+      .from('tenant_requirement_links')
+      .update({ removed_at: new Date().toISOString(), removed_by: req.user!.id, removed_reason: body.reason })
+      .eq('id', linkId)
+      .eq('tenant_id', tenantId)
+      .eq('requirement_id', id)
+      .is('removed_at', null)
+      .select('id, kind, workflow_family, module')
+      .maybeSingle()
+    if (error) return dbFail(res, error, 'matrix.link.remove')
+    if (!removed) return res.status(404).json({ error: 'Lien introuvable ou déjà retiré.', code: 'ERR_NOT_FOUND' })
+
+    await auditMatrix(tenantId, req.user!.id, 'matrix.link.remove', id, {
+      link_id: removed.id, kind: removed.kind, target: removed.module ?? removed.workflow_family, reason: body.reason,
+    })
+    const { lines } = await loadMatrix(tenantId)
+    res.json({ requirement: lines.find((l) => l.id === id) ?? null })
+  },
+)
+
 // Approbation d'une non-applicabilité (K.4) — par une personne DISTINCTE du demandeur ; le nom et la
 // fonction de l'approbateur sont déterminés par le serveur (jamais saisis par le demandeur).
 router.post(
@@ -638,6 +790,8 @@ const CSV_HEADER = [
   'clause',
   'exigence',
   'workflow',
+  'liens_etat',
+  'avertissements',
   'responsable',
   'preuve_attendue',
   'controle',
@@ -663,6 +817,8 @@ router.get('/export', requireAuth, requireTenant, requirePermission('evidence.ex
         l.clause,
         l.title,
         l.workflow_codes.join(' | '),
+        l.links.map((k) => `${k.target} (${k.state}${k.origin === 'suggestion' ? ', suggestion' : ''})`).join(' | '),
+        l.warnings.join(' | '),
         l.process_owner,
         l.objective_evidence,
         l.software_control,

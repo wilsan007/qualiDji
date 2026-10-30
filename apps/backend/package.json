@@ -8,7 +8,7 @@
     "build": "rm -rf dist && tsc",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx scripts/test_matrix_logic.ts && tsx scripts/test_rbac_permissions.ts && tsx scripts/test_ai_controls.ts && tsx scripts/test_rate_limiter.ts && tsx scripts/test_offline_queue.ts && tsx scripts/test_step_validation.ts && tsx scripts/test_evidence_files.ts && tsx scripts/test_trust_proxy.ts && tsx scripts/test_governance_rules.ts && tsx scripts/test_health_audit.ts && tsx scripts/test_guide.ts",
+    "test": "tsx scripts/test_matrix_logic.ts && tsx scripts/test_rbac_permissions.ts && tsx scripts/test_ai_controls.ts && tsx scripts/test_rate_limiter.ts && tsx scripts/test_offline_queue.ts && tsx scripts/test_step_validation.ts && tsx scripts/test_evidence_files.ts && tsx scripts/test_trust_proxy.ts && tsx scripts/test_governance_rules.ts && tsx scripts/test_health_audit.ts && tsx scripts/test_guide.ts && tsx scripts/test_requirement_links.ts",
     "test:rbac": "tsx scripts/test_rbac_permissions.ts",
     "test:ai": "tsx scripts/test_ai_controls.ts",
     "test:guide": "tsx scripts/test_guide.ts",
@@ -22,7 +22,8 @@
     "test:evidence": "tsx scripts/test_evidence_files.ts",
     "test:deploy": "tsx scripts/test_trust_proxy.ts",
     "test:governance": "tsx scripts/test_governance_rules.ts",
-    "test:health": "tsx scripts/test_health_audit.ts"
+    "test:health": "tsx scripts/test_health_audit.ts",
+    "test:links": "tsx scripts/test_requirement_links.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.46.1",

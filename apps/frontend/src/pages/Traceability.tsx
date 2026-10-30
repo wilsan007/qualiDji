@@ -10,6 +10,7 @@ import {
 } from '@/lib/format'
 import { PageLoader, ErrorState, EmptyState } from '@/components/ui/States'
 import { usePermissions } from '@/hooks/usePermissions'
+import { RequirementLinks } from '@/components/RequirementLinks'
 import type { Applicability, MatrixCoverage, MatrixRequirement, MatrixTest } from '@/types'
 import {
   AlertTriangle,
@@ -195,10 +196,7 @@ function LineEditor({
                 ))}
               </ul>
             )}
-            <p className="text-xs text-slate-500 mt-3">
-              Workflows : {line.workflow_codes.join(', ') || '—'} · Dernier motif :{' '}
-              {line.assessment?.last_reason ?? '—'}
-            </p>
+            <p className="text-xs text-slate-500 mt-3">Dernier motif : {line.assessment?.last_reason ?? '—'}</p>
           </div>
 
           {err && (
@@ -206,6 +204,9 @@ function LineEditor({
               {err}
             </div>
           )}
+
+          {/* Carte exigence ↔ workflows / modules de l'entreprise (avertissement, jamais bloquant) */}
+          <RequirementLinks line={line} canEdit={canEdit} onSaved={onSaved} />
 
           {/* Tests K.3 */}
           <section>
@@ -715,7 +716,12 @@ export default function Traceability() {
                     <td className="px-3 py-3 text-slate-800 max-w-md">
                       <p className="line-clamp-2">{r.title}</p>
                       <p className="text-[11px] text-slate-400 mt-0.5">
-                        {r.workflow_codes.join(', ') || 'workflow à associer'}
+                        {r.links.length > 0 ? r.links.map((l) => l.target).join(', ') : '—'}
+                        {r.warnings.length > 0 && (
+                          <span className="text-amber-600">
+                            {r.links.length > 0 ? ' · ' : ''}non couverte par un workflow ou un module (avertissement)
+                          </span>
+                        )}
                       </p>
                     </td>
                     <td className="px-3 py-3 text-slate-600 whitespace-nowrap">
