@@ -649,6 +649,9 @@ check 'OP soumet l’action complète → 200'                         200 "$OP_
 expect_eq "statut 'submitted'" "$(act_status "$A1")" submitted
 check 'OP modifie une étape après soumission → 409'                409 "$OP_TOKEN" POST "/steps/$A1/steps/$S1/submit" "{\"value\":\"$TXT60\"}"
 check 'OP soumet une 2e fois → 409'                                409 "$OP_TOKEN" POST "/actions/$A1/submit"
+# Même garde-fou que /upload : l'exécutant ne dépose plus de preuve (métadonnées) sur une action soumise
+check 'OP POST /evidence (métadonnées) sur une action soumise → 409' 409 "$OP_TOKEN" POST /evidence "{\"action_id\":\"$A1\",\"step_id\":\"$S1\",\"kind\":\"measure\",\"value\":{\"temperature\":21.5,\"unit\":\"C\"}}"
+grep -q 'ERR_ACTION_STATUS' "$BODY_FILE" && { PASS=$((PASS + 1)); echo "  ✓ … code ERR_ACTION_STATUS"; } || { FAIL=$((FAIL + 1)); echo "  ✗ … code ERR_ACTION_STATUS absent"; }
 check 'OP approuve sa propre action → 403 action.approve'          403 "$OP_TOKEN" POST "/actions/$A1/approve" '{}'
 check 'QM rejette sans motif → 400'                                400 "$QM_TOKEN" POST "/actions/$A1/reject" '{}'
 check 'QM rejette avec motif → 200 (retour à l’exécutant)'        200 "$QM_TOKEN" POST "/actions/$A1/reject" '{"comment":"Facteurs externes trop généraux, à préciser"}'

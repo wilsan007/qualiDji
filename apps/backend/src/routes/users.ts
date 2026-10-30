@@ -17,6 +17,9 @@ import { invalidateAuthCache } from '../middleware/auth'
  */
 const router: ExpressRouter = Router()
 
+/** Codes GoTrue d'un quota atteint (erreur temporaire, à distinguer d'un refus définitif). */
+const INVITE_RATE_LIMIT_CODES = new Set(['over_email_send_rate_limit', 'over_request_rate_limit'])
+
 const TENANT_ROLES = [
   'tenant_admin', 'quality_manager', 'site_manager', 'department_manager',
   'process_owner', 'operator', 'internal_auditor', 'external_auditor',
@@ -111,8 +114,9 @@ router.post('/invite', requireAuth, requireTenant, requirePermission('user.manag
     // Quota d'e-mails du fournisseur (GoTrue cloud ~1/h) : erreur TEMPORAIRE et
     // réessayable — 429 avec code distinct, pour ne pas masquer un problème
     // transitoire derrière un 400 « refus définitif » (E2E distant PV §6.1).
-    if (/rate limit|too many|over_email_send_rate|429/i.test(msg)) {
-      res.setHeader('Retry-After', '3600')
+    // Détection sur les champs structurés de l'erreur GoTrue (status/code), pas sur le
+    // texte du message ; pas de Retry-After : le fournisseur n'expose aucune durée d'attente.
+    if (invErr.status === 429 || INVITE_RATE_LIMIT_CODES.has(invErr.code ?? '')) {
       return res.status(429).json({
         error: "quota d'envoi d'e-mails du fournisseur d'identité atteint — réessayer plus tard",
         code: 'ERR_INVITE_RATE_LIMIT',
