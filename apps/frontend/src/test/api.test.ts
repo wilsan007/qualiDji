@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 /**
  * Couche API frontend (§9.2 / §9.3) : construction des appels, propagation
@@ -13,7 +13,7 @@ vi.mock('@/lib/supabase', () => ({
   supabase: { auth: { getSession: mockGetSession } },
 }))
 
-import { auditsApi, reviewsApi, actionsApi, ncApi, evidenceApi, apiFetch } from '@/lib/api'
+import { auditsApi, reviewsApi, actionsApi, ncApi, evidenceApi, apiFetch, warmUpApi, COLD_START_MESSAGE } from '@/lib/api'
 
 describe('lib/api — audits internes (§9.2)', () => {
   beforeEach(() => {
@@ -237,5 +237,84 @@ describe('lib/api — recalcul du guide contextuel', () => {
     } finally {
       window.removeEventListener('qualidji:data-changed', onChange)
     }
+  })
+})
+
+describe('lib/api — démarrage à froid du Worker (503 « error code: 1105 »)', () => {
+  const edge = () => new Response('error code: 1105', { status: 503, headers: { 'Content-Type': 'text/plain' } })
+  const cloudflarePage = () =>
+    new Response('<!DOCTYPE html><html><head><title>Cloudflare</title></head><body>Error</body></html>', { status: 500 })
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('un GET reçoit le 503 du réseau Cloudflare puis la vraie réponse : rejoué automatiquement', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(edge())
+      .mockResolvedValueOnce(cloudflarePage())
+      .mockResolvedValueOnce(json({ ok: true }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const pending = apiFetch('/me')
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(await pending).toEqual({ ok: true })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('un GET toujours en échec après les 3 nouveaux essais : message clair, 4 appels au total', async () => {
+    const fetchMock = vi.fn(async () => edge())
+    vi.stubGlobal('fetch', fetchMock)
+
+    const pending = apiFetch('/me').catch((e: Error) => e)
+    await vi.advanceTimersByTimeAsync(20_000)
+    const err = await pending
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toBe(COLD_START_MESSAGE)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('un POST n’est jamais rejoué (effet de bord possible) : un seul appel, message clair', async () => {
+    const fetchMock = vi.fn(async () => edge())
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(apiFetch('/actions', { method: 'POST', body: '{}' })).rejects.toThrow(COLD_START_MESSAGE)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('une vraie erreur de l’API (JSON, même 503) n’est pas confondue avec un démarrage à froid', async () => {
+    const fetchMock = vi.fn(async () => json({ error: 'base indisponible' }, 503))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(apiFetch('/me')).rejects.toThrow('base indisponible')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('une erreur 4xx n’est jamais rejouée', async () => {
+    const fetchMock = vi.fn(async () => json({ error: 'introuvable' }, 404))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(apiFetch('/audits/x')).rejects.toThrow('introuvable')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('warmUpApi appelle /health sans cache, sans jeton, et ignore un échec', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      throw new TypeError('Failed to fetch')
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(() => warmUpApi()).not.toThrow()
+    await vi.advanceTimersByTimeAsync(0)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toMatch(/\/health$/)
+    expect(String(url)).not.toContain('/api/v1')
+    expect(init).toEqual({ cache: 'no-store' })
   })
 })
