@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 import { supabase } from './supabase'
+import type { LinkModule } from '@/types'
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:4000/api/v1'
 /** Événement émis après chaque écriture réussie (écouté par GuidePanel). */
@@ -252,6 +253,20 @@ export const matrixApi = {
   /** Approbation d'une non-applicabilité (K.4) : personne distincte du demandeur, identité fixée par le serveur. */
   approveNa: (id: string) => apiFetch(`/matrix/requirements/${id}/na-approve`, { method: 'POST', body: '{}' }),
   naRegister: () => apiFetch('/matrix/na-register'),
+  /**
+   * Carte exigences ↔ workflows de l'entreprise (traçabilité, sans effet sur le statut de couverture) :
+   * lien vers un workflow ou un module, ou suggestion du catalogue écartée. Motif obligatoire (L.5).
+   */
+  addLink: (
+    id: string,
+    body:
+      | { kind: 'workflow'; workflow_family: string; coverage_type?: 'primary' | 'supporting'; reason: string }
+      | { kind: 'module'; module: LinkModule; coverage_type?: 'primary' | 'supporting'; reason: string }
+      | { kind: 'exclusion'; workflow_family: string; reason: string },
+  ) => apiFetch(`/matrix/requirements/${id}/links`, { method: 'POST', body: JSON.stringify(body) }),
+  /** Retire un lien (ou rétablit une suggestion écartée) ; l'historique est conservé côté serveur. */
+  removeLink: (id: string, linkId: string, reason: string) =>
+    apiFetch(`/matrix/requirements/${id}/links/${linkId}/remove`, { method: 'POST', body: JSON.stringify({ reason }) }),
   validations: () => apiFetch('/matrix/validations'),
 
   /** Télécharge l'export CSV (L.1: remise en format éditable). */

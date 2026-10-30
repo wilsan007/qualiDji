@@ -148,6 +148,10 @@ jobs:
           EXPECT_HARDENED_DB: 1
 
       - name: Suite E2E (RBAC, modules B/G/H, IA, documents, audits, durcissement)
+        env:
+          # Active le bloc E2E « carte exigences ↔ workflows par entreprise » (migration 0020,
+          # appliquée par db reset). Variable propre à CETTE étape : sans elle le bloc est ignoré.
+          EXPECT_LINKS_DB: 1
         run: |
           cd apps/backend
           API_URL=http://localhost:4000/api/v1 \

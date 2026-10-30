@@ -169,6 +169,10 @@ consiste à redéployer `dist/` et à vider le cache du navigateur si nécessair
 Règle d'or : **jamais de modifications manuelles de `supabase/migrations`**
 entre deux releases ; toute correction se fait par nouvelle migration.
 
+**Migration 0020 (carte exigences ↔ workflows par entreprise)** : l'appliquer sur le cloud **avant** de déployer
+le code qui l'utilise (`supabase db push`, après `--dry-run`). Si le code est déployé avant, la matrice reste
+lisible (carte globale seule), mais l'ajout ou le retrait d'un lien échoue tant que la table n'existe pas.
+
 ---
 
 ## 8. Sauvegarde & restauration

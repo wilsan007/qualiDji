@@ -8,8 +8,9 @@ reviendrait à produire du contenu normatif sans autorité de validation.
 ## État au 25/10/2026
 - 1 workflow publié dans la bibliothèque globale : `WF_CONTEXT_ANALYSIS` (clause 4.1).
 - 54 exigences (annexe N, seed 0002), dont **toutes** sont rattachées par `workflow_requirement_map` à un code de workflow ;
-  **26 codes mappés n'ont aucune définition**. La matrice les signale correctement comme lacunes bloquantes
-  (« Fonction, preuve ou contrôle non renseigné » / tests non exécutés).
+  **26 codes mappés n'ont aucune définition**. Correction du 29/10/2026 : la carte n'influence **pas** le statut de
+  couverture (`computeState` ne la lit pas) ; les lacunes bloquantes de la matrice viennent des champs K.2 (responsable, preuve,
+  méthode) et des tests non exécutés. Un lien manquant produit seulement un **avertissement** (carte par entreprise, migration 0020).
 - La matrice annonce elle-même (étape K.1) qu'elle doit être confirmée sur un exemplaire autorisé de la norme.
 
 ## Workflows à définir par le responsable qualité (code → clause)

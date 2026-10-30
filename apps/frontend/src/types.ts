@@ -114,6 +114,32 @@ export interface MatrixTest {
   executed_at?: string | null
 }
 
+/** État de la cible d'un lien : un workflow (publié, en revue, brouillon, déprécié, non défini) ou un module. */
+export type LinkState = 'published' | 'in_review' | 'draft' | 'deprecated' | 'missing' | 'module'
+export type LinkModule = 'audits' | 'reviews' | 'nonconformities' | 'documents'
+
+/** Lien de la carte EFFECTIVE d'une exigence (suggestion du catalogue ou lien ajouté par l'entreprise). */
+export interface RequirementLink {
+  /** null pour une suggestion du catalogue */
+  id: string | null
+  origin: 'suggestion' | 'tenant'
+  kind: 'workflow' | 'module'
+  /** Famille de workflow (code racine) ou identifiant de module */
+  target: string
+  label: string
+  coverage_type: 'primary' | 'supporting'
+  state: LinkState
+  reason: string | null
+  created_at: string | null
+}
+
+export interface ExcludedSuggestion {
+  id: string
+  target: string
+  reason: string
+  created_at: string
+}
+
 export interface MatrixRequirement {
   id: string
   clause: string
@@ -126,6 +152,12 @@ export interface MatrixRequirement {
   verification_method?: string | null
   spaces: string[]
   workflow_codes: string[]
+  /** Carte effective (suggestions − écartées + liens de l'entreprise) */
+  links: RequirementLink[]
+  /** Suggestions du catalogue écartées par l'entreprise (rétablissables) */
+  excluded_suggestions: ExcludedSuggestion[]
+  /** Avertissements NON bloquants : jamais comptés dans blocking ni blocking_reasons */
+  warnings: string[]
   assessment?: {
     applicability: Applicability
     na_justification?: string | null
