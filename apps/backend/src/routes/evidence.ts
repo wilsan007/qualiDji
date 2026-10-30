@@ -187,7 +187,10 @@ router.post('/', requireAuth, requireTenant, requirePermission('evidence.upload'
   const { data: action } = await supabaseAdmin
     .from('actions').select('id, action_def_id, assigned_to, status').eq('id', action_id).eq('tenant_id', tenantId).maybeSingle()
   if (!action || !canSeeAction(req, action)) return res.status(404).json({ error: 'action not found' })
-  if (TERMINAL.includes(action.status)) {
+  // Même garde-fou que /upload : une action soumise n'accepte plus de preuve
+  // de l'exécutant (seul un gestionnaire — approbateur — peut encore en déposer).
+  const manager = canSeeAllActions(req)
+  if (TERMINAL.includes(action.status) || (action.status === 'submitted' && !manager)) {
     return res.status(409).json({ error: `dépôt impossible : statut ${action.status}`, code: 'ERR_ACTION_STATUS' })
   }
 
