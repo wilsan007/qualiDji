@@ -189,6 +189,14 @@ export default function Audits() {
                 <div>
                   <p className="font-semibold text-slate-800">{a.title}</p>
                   <p className="text-xs text-slate-500">{a.scope} · critères : {a.criteria}</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Auditeur : {a.auditor_label ?? '—'}
+                    {a.started_at ? ` · démarré le ${new Date(a.started_at).toLocaleDateString('fr-FR')}` : ''}
+                    {a.closed_at ? ` · clôturé le ${new Date(a.closed_at).toLocaleDateString('fr-FR')}` : ''}
+                  </p>
+                  {a.status === 'closed' && a.summary && (
+                    <p className="text-xs text-slate-600 mt-1"><span className="font-semibold">Synthèse de clôture :</span> {a.summary}</p>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={cn('badge whitespace-nowrap', AUDIT_STATUS[a.status]?.badge)}>{AUDIT_STATUS[a.status]?.label}</span>
@@ -253,6 +261,11 @@ export default function Audits() {
                     </div>
                     <span className={cn('badge whitespace-nowrap', FIND_STATUS[f.status]?.badge)}>{FIND_STATUS[f.status]?.label}</span>
                   </div>
+                  <p className="text-[11px] text-slate-400">
+                    Responsable de processus : {f.process_owner_label ?? '—'}
+                    {f.responded_by_label ? ` · réponse de ${f.responded_by_label}${f.responded_at ? ` le ${new Date(f.responded_at).toLocaleDateString('fr-FR')}` : ''}` : ''}
+                    {f.verified_by_label ? ` · vérifié par ${f.verified_by_label}${f.verified_at ? ` le ${new Date(f.verified_at).toLocaleDateString('fr-FR')}` : ''}` : ''}
+                  </p>
                   {f.response && (
                     <p className="text-xs text-slate-600 bg-slate-50 rounded p-2 border border-slate-200">
                       <span className="font-semibold">Réponse process :</span> {f.response}

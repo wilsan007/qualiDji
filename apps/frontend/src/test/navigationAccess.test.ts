@@ -15,10 +15,10 @@ const EXPECTED: Record<string, { perm?: string; anyPerm?: string[] }> = {
   matrice: {},
   workflows: { perm: 'workflow.read' },
   users: { perm: 'user.manage' },
-  reports: { perm: 'action.approve' },
+  reports: { anyPerm: ['action.approve', 'audit.export'] },
   documents: { perm: 'document.read' },
-  audits: { anyPerm: ['internal_audit.manage', 'internal_audit.respond'] },
-  reviews: { perm: 'management_review.manage' },
+  audits: { anyPerm: ['internal_audit.manage', 'internal_audit.respond', 'internal_audit.read'] },
+  reviews: { anyPerm: ['management_review.manage', 'management_review.read'] },
 }
 
 describe('droits d’accès des écrans (menu ↔ guide du serveur)', () => {

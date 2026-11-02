@@ -1,19 +1,69 @@
 import { useCallback, useEffect, useState } from 'react'
-import { dashboardApi } from '@/lib/api'
+import { dashboardApi, reportsApi } from '@/lib/api'
 import { errorMessage } from '@/lib/format'
 import { PageLoader, ErrorState, EmptyState } from '@/components/ui/States'
-import { Activity, CheckCircle, Clock, FileText, RefreshCw, ShieldCheck } from 'lucide-react'
+import { Activity, CheckCircle, Clock, Download, FileText, RefreshCw, ShieldCheck } from 'lucide-react'
 
 /** Traduction des actions du journal d'audit. */
 const ACTION_LABELS: Record<string, string> = {
+  'action.create': 'Action lancée',
+  'action.assign': 'Action réassignée',
+  'action.start': 'Action démarrée',
   'action.submit': "Action soumise à l'évaluateur",
   'action.approve': 'Action validée',
+  'action.reject': 'Action rejetée',
+  'action.approve_blocked': 'Validation refusée (séparation des tâches)',
+  'action.exception': 'Exception déclarée sur une action',
   'action.block': 'Action bloquée (exception)',
   'step.submit': 'Étape de terrain soumise',
   'evidence.upload': 'Preuve téléversée',
-  'evidence.validated': 'Preuve contrôlée et validée',
+  'evidence.record': 'Preuve (mesure/texte) enregistrée',
+  'evidence.download': 'Preuve téléchargée',
+  'evidence.delete': 'Preuve supprimée',
   'nc.create': 'Non-conformité déclarée',
+  'nonconformity.create': 'Non-conformité déclarée',
   'nc.capa': 'Plan CAPA enregistré',
+  'capa.create': 'Plan CAPA enregistré',
+  'capa.effectiveness_check': "Efficacité d'une CAPA vérifiée",
+  'document.create': 'Document créé (brouillon)',
+  'document.update_draft': 'Brouillon de document modifié',
+  'document.submit': 'Document soumis en revue',
+  'document.approve': 'Document approuvé et publié',
+  'document.reject': 'Document rejeté',
+  'document.duplicate': 'Nouvelle version de document',
+  'document.deprecate': 'Document déprécié',
+  'document.delete': 'Document supprimé (jamais publié)',
+  'workflow.create': 'Workflow créé (brouillon)',
+  'workflow.update_draft': 'Brouillon de workflow modifié',
+  'workflow.submit': 'Workflow soumis en revue',
+  'workflow.approve': 'Workflow approuvé et publié',
+  'workflow.reject': 'Workflow rejeté',
+  'workflow.duplicate': 'Nouvelle version de workflow',
+  'workflow.deprecate': 'Workflow déprécié',
+  'workflow.delete': 'Workflow supprimé (jamais publié)',
+  'audit.create': 'Audit interne planifié',
+  'audit.start': 'Audit interne démarré',
+  'audit.finding': "Constat d'audit enregistré",
+  'audit.finding_respond': "Réponse à un constat d'audit",
+  'audit.finding_verified': "Vérification d'efficacité d'un constat",
+  'audit.close': 'Audit interne clôturé',
+  'audit.auto_audit_blocked': 'Auto-audit refusé (séparation des tâches)',
+  'audit.verify_blocked': 'Vérification refusée (séparation des tâches)',
+  'management_review.create': 'Revue de direction créée',
+  'management_review.prefill': 'Entrées de revue consolidées',
+  'management_review.update': 'Décisions / actions de revue modifiées',
+  'management_review.hold': 'Revue de direction tenue',
+  'matrix.requirement.update': 'Ligne de la matrice modifiée',
+  'matrix.test.update': "Test d'acceptation enregistré",
+  'matrix.requirement.na_approve': 'Non-applicabilité approuvée',
+  'matrix.link.add': 'Lien exigence ↔ workflow ajouté',
+  'matrix.link.remove': 'Lien exigence ↔ workflow retiré',
+  'user.invite': 'Utilisateur invité',
+  'user.update': 'Utilisateur modifié (rôle, nom)',
+  'user.deactivate': 'Utilisateur suspendu',
+  'user.activate': 'Utilisateur réactivé',
+  'report.export': 'Export (CSV / paquet)',
+  'audit_log.view': "Journal d'audit consulté",
 }
 
 function actionLabel(action: string): string {
@@ -58,12 +108,20 @@ export default function AuditReadiness() {
             Historique verrouillé des événements et chaîne de preuves pour votre audit ISO 9001
           </p>
         </div>
-        <button
-          onClick={load}
-          className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors shadow-sm"
-        >
-          <RefreshCw className="w-4 h-4" /> Actualiser
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => void reportsApi.exportAuditLog().catch((e) => setError(errorMessage(e)))}
+            className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors shadow-sm"
+          >
+            <Download className="w-4 h-4" /> Journal complet (CSV)
+          </button>
+          <button
+            onClick={load}
+            className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors shadow-sm"
+          >
+            <RefreshCw className="w-4 h-4" /> Actualiser
+          </button>
+        </div>
       </div>
 
       {error && <ErrorState message={error} onRetry={load} />}
@@ -88,10 +146,10 @@ export default function AuditReadiness() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">
-                    Preuves validées
+                    Preuves déposées
                   </p>
                   <p className="text-2xl font-bold text-slate-900 mt-1">
-                    {events.filter((e) => e.action === 'evidence.validated').length}
+                    {events.filter((e) => e.action === 'evidence.upload' || e.action === 'evidence.record').length}
                   </p>
                 </div>
                 <div className="w-10 h-10 rounded-lg bg-emerald-100 flex items-center justify-center text-emerald-600">
@@ -103,7 +161,7 @@ export default function AuditReadiness() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">
-                    En attente de contrôle
+                    Étapes saisies
                   </p>
                   <p className="text-2xl font-bold text-slate-900 mt-1">
                     {events.filter((e) => e.action === 'step.submit').length}
@@ -147,7 +205,7 @@ export default function AuditReadiness() {
                           {actionLabel(e.action)}
                         </p>
                         <p className="text-xs text-slate-500 mt-0.5 truncate">
-                          {e.entity} • {new Date(e.created_at).toLocaleString('fr-FR')}
+                          {e.actor ?? 'système'} • {e.entity} • {new Date(e.created_at).toLocaleString('fr-FR')}
                         </p>
                       </div>
                     </div>

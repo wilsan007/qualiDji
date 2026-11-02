@@ -104,6 +104,11 @@ function canSeeDrafts(req: AuthedRequest): boolean {
   return req.permissions?.has('workflow.approve') ?? false
 }
 
+/** Auteurs (consultant, responsables de site/département…) : voient leurs propres brouillons sans pouvoir approuver. */
+function canAuthor(req: AuthedRequest): boolean {
+  return (req.permissions?.has('workflow.create') ?? false) || (req.permissions?.has('workflow.edit_draft') ?? false)
+}
+
 function audit(req: AuthedRequest, action: string, entityId: string, payload: Record<string, unknown> = {}) {
   return auditFromReq(req, action, 'workflow_definition', entityId, payload)
 }
@@ -134,8 +139,8 @@ async function loadWorkflow(id: string, req: AuthedRequest, res: any) {
     res.status(404).json({ error: 'workflow not found' })
     return null
   }
-  // Un global non publié n'est visible d'aucun tenant ; un brouillon propre exige workflow.approve.
-  if (wf.status !== 'published' && (wf.tenant_id === null || !canSeeDrafts(req))) {
+  // Un global non publié n'est visible d'aucun tenant ; un brouillon propre exige workflow.approve (ou d'en être l'auteur).
+  if (wf.status !== 'published' && (wf.tenant_id === null || !(canSeeDrafts(req) || wf.created_by === req.user?.id))) {
     if (wf.tenant_id === null) {
       res.status(404).json({ error: 'workflow not found' })
       return null
@@ -193,7 +198,7 @@ async function loadOwnWorkflow(id: string, req: AuthedRequest, res: any) {
 // exigent workflow.approve (?include_all=1).
 router.get('/', requireAuth, requireTenant, requirePermission('workflow.read'), async (req: AuthedRequest, res) => {
   const includeAll = req.query.include_all === '1'
-  if (includeAll && !canSeeDrafts(req)) {
+  if (includeAll && !canSeeDrafts(req) && !canAuthor(req)) {
     return res.status(403).json({ error: 'missing permission: workflow.approve', code: 'ERR_PERMISSION_DENIED' })
   }
   const tid = req.user!.tenant_id!
@@ -202,8 +207,11 @@ router.get('/', requireAuth, requireTenant, requirePermission('workflow.read'), 
     .select('*')
     .order('name')
   // Globaux publiés + workflows du tenant (published par défaut, tous statuts avec include_all)
+  // Un auteur sans droit d'approbation voit les workflows publiés + SES brouillons/revues (jamais ceux des autres).
   query = includeAll
-    ? query.or(`and(tenant_id.is.null,status.eq.published),tenant_id.eq.${tid}`)
+    ? canSeeDrafts(req)
+      ? query.or(`and(tenant_id.is.null,status.eq.published),tenant_id.eq.${tid}`)
+      : query.or(`and(tenant_id.is.null,status.eq.published),and(tenant_id.eq.${tid},status.eq.published),and(tenant_id.eq.${tid},created_by.eq.${req.user!.id})`)
     : query.eq('status', 'published').or(scope(tid))
   const { data, error } = await query
   if (error) return dbFail(res, error, 'workflows.list', 500)

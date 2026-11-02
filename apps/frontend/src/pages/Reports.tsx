@@ -83,10 +83,11 @@ export default function Reports() {
     }
   }
 
-  const doExport = async (which: 'actions' | 'nc') => {
+  const doExport = async (which: 'actions' | 'nc' | 'log') => {
     setExporting(which)
     try {
       if (which === 'actions') await reportsApi.exportActions(filters)
+      else if (which === 'log') await reportsApi.exportAuditLog()
       else await reportsApi.exportNcCapa()
     } catch (e: any) {
       setError(e.message ?? 'export impossible')
@@ -125,6 +126,14 @@ export default function Reports() {
               >
                 <Download className="w-4 h-4" />
                 {exporting === 'nc' ? 'Export…' : 'CSV NC/CAPA'}
+              </button>
+              <button
+                onClick={() => void doExport('log')}
+                disabled={exporting !== ''}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                <Download className="w-4 h-4" />
+                {exporting === 'log' ? 'Export…' : 'CSV journal d’audit'}
               </button>
               <button
                 onClick={() => void loadPack()}

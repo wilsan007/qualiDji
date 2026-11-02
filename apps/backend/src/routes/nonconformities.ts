@@ -112,6 +112,8 @@ router.post('/:id/capa', requireAuth, requireTenant, requirePermission('capa.clo
   }).select().single()
 
   if (error) return dbFail(res, error, 'capa.create')
+  // Un plan CAPA enregistré = la NC est en traitement (une NC déjà clôturée ne se rouvre pas ici).
+  await supabaseAdmin.from('nonconformities').update({ status: 'in_progress' }).eq('id', id).eq('tenant_id', req.user!.tenant_id).eq('status', 'open')
   await auditFromReq(req, 'capa.create', 'capa', data.id, { nonconformity_id: id, responsible: responsible ?? null, due_date: due_date ?? null })
   res.status(201).json({ capa: data })
 })
@@ -127,7 +129,9 @@ router.post('/capas/:id/effectiveness-check', requireAuth, requireTenant, requir
     .from('capas')
     .update({
       effectiveness_check_at: new Date().toISOString(),
-      effectiveness_result: comments ?? (effective ? 'effective' : 'ineffective'),
+      // Résultat normalisé (compté par les rapports) ; le commentaire de l'évaluateur est conservé à part.
+      effectiveness_result: effective ? 'effective' : 'ineffective',
+      effectiveness_comments: comments?.trim() || null,
       status: effective ? 'verified' : 'reopened',
     })
     .eq('id', id)
@@ -136,8 +140,18 @@ router.post('/capas/:id/effectiveness-check', requireAuth, requireTenant, requir
     .single()
 
   if (error || !data) return res.status(404).json({ error: 'capa not found' })
-  await auditFromReq(req, 'capa.effectiveness_check', 'capa', data.id, { effective, result_status: data.status })
-  res.json({ capa: data })
+
+  // Cycle de vie de la NC : CAPA efficace → NC clôturée ; inefficace → NC de nouveau en traitement.
+  const { data: nc } = await supabaseAdmin
+    .from('nonconformities')
+    .update(effective ? { status: 'closed', closed_at: new Date().toISOString() } : { status: 'in_progress', closed_at: null })
+    .eq('id', data.nonconformity_id)
+    .eq('tenant_id', req.user!.tenant_id)
+    .select()
+    .maybeSingle()
+
+  await auditFromReq(req, 'capa.effectiveness_check', 'capa', data.id, { effective, result_status: data.status, nonconformity_status: nc?.status ?? null })
+  res.json({ capa: data, nonconformity: nc ?? null })
 })
 
 export const nonconformitiesRouter: ExpressRouter = router

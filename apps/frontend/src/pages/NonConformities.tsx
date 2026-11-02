@@ -19,7 +19,16 @@ interface NcItem {
   severity: string
   status: string
   created_at: string
+  closed_at?: string | null
   capa?: any
+}
+
+const CAPA_STATUS: Record<string, string> = {
+  open: 'Plan en cours — efficacité à vérifier',
+  implemented: 'Réalisé — efficacité à vérifier',
+  verified: 'Efficacité vérifiée',
+  closed: 'Clôturé',
+  reopened: 'Rouvert — inefficace, à reprendre',
 }
 
 /** Modale légère pour créer une non-conformité. */
@@ -108,8 +117,10 @@ function CreateNcModal({ open, onClose, onCreated }: {
 }
 
 /** Ligne de NC dépliable : détails + formulaire CAPA. */
-function NcRow({ nc, onChanged }: { nc: NcItem; onChanged: () => void }) {
+function NcRow({ nc, onChanged, canCapa }: { nc: NcItem; onChanged: () => void; canCapa: boolean }) {
   const [open, setOpen] = useState(false)
+  const [verifyComment, setVerifyComment] = useState('')
+  const [verifying, setVerifying] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [rootCause, setRootCause] = useState('')
@@ -135,6 +146,21 @@ function NcRow({ nc, onChanged }: { nc: NcItem; onChanged: () => void }) {
       setSaving(false)
     }
   }
+
+  const verify = async (effective: boolean) => {
+    setVerifying(true)
+    setError('')
+    try {
+      await ncApi.effectiveness(nc.capa.id, { effective, comments: verifyComment.trim() || undefined })
+      setVerifyComment('')
+      onChanged()
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setVerifying(false)
+    }
+  }
+  const pendingVerification = nc.capa && ['open', 'implemented', 'reopened'].includes(nc.capa.status)
 
   return (
     <div className="border-b border-slate-100 last:border-0">
@@ -171,16 +197,46 @@ function NcRow({ nc, onChanged }: { nc: NcItem; onChanged: () => void }) {
 
           {nc.capa ? (
             <div className="mt-3 rounded-lg bg-emerald-50 border border-emerald-200 p-4">
-              <div className="flex items-center gap-2 text-emerald-800 text-sm font-semibold mb-2">
-                <ShieldCheck className="w-4 h-4" /> Plan d'action CAPA enregistré
+              <div className="flex flex-wrap items-center justify-between gap-2 text-emerald-800 text-sm font-semibold mb-2">
+                <span className="flex items-center gap-2"><ShieldCheck className="w-4 h-4" /> Plan d'action CAPA enregistré</span>
+                <span className="badge bg-white text-emerald-800 border-emerald-200">{CAPA_STATUS[nc.capa.status] ?? nc.capa.status}</span>
               </div>
               <p className="text-xs text-emerald-800 leading-relaxed">
                 Cause racine : {nc.capa.root_cause || '—'}<br />
                 Action corrective : {nc.capa.corrective_action || '—'}<br />
                 Responsable : {nc.capa.responsible || '—'} — Échéance : {nc.capa.due_date ? formatDate(nc.capa.due_date) : '—'}
               </p>
+              {nc.capa.effectiveness_check_at && (
+                <p className="text-xs text-emerald-800 leading-relaxed mt-2 pt-2 border-t border-emerald-200">
+                  Vérification d'efficacité le {formatDateTime(nc.capa.effectiveness_check_at)} :{' '}
+                  <span className="font-semibold">{nc.capa.effectiveness_result === 'effective' ? 'efficace' : 'inefficace'}</span>
+                  {nc.capa.effectiveness_comments ? ` — ${nc.capa.effectiveness_comments}` : ''}
+                </p>
+              )}
+              {nc.status === 'closed' && nc.closed_at && (
+                <p className="text-xs font-semibold text-emerald-900 mt-2">Non-conformité clôturée le {formatDateTime(nc.closed_at)}.</p>
+              )}
+              {canCapa && pendingVerification && (
+                <div className="mt-3 pt-3 border-t border-emerald-200 space-y-2">
+                  <label className="label" htmlFor={`verify-${nc.id}`}>Vérification d'efficacité (une fois l'action corrective réalisée)</label>
+                  <textarea
+                    id={`verify-${nc.id}`}
+                    className="input min-h-[64px] bg-white"
+                    placeholder="Constat de la vérification (obligatoire pour « Inefficace »)"
+                    value={verifyComment}
+                    onChange={(e) => setVerifyComment(e.target.value)}
+                  />
+                  {error && <p className="text-xs text-red-600">{error}</p>}
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" loading={verifying} onClick={() => verify(true)}>Efficacité vérifiée</Button>
+                    <Button size="sm" variant="outline" disabled={verifying || verifyComment.trim().length < 3} onClick={() => verify(false)}>
+                      Inefficace — rouvrir
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
-          ) : (
+          ) : canCapa ? (
             <form onSubmit={submitCapa} className="mt-3 space-y-3">
               <p className="text-sm font-medium text-slate-700">Lancer un plan CAPA (cause racine + action corrective)</p>
               <div className="grid sm:grid-cols-2 gap-3">
@@ -192,6 +248,8 @@ function NcRow({ nc, onChanged }: { nc: NcItem; onChanged: () => void }) {
               {error && <p className="text-xs text-red-600">{error}</p>}
               <Button size="sm" type="submit" loading={saving}>Enregistrer le CAPA</Button>
             </form>
+          ) : (
+            <p className="mt-3 text-xs text-slate-500">Aucun plan CAPA enregistré pour cette non-conformité.</p>
           )}
         </div>
       )}
@@ -207,6 +265,7 @@ export default function NonConformities() {
   // Création de NC = action.approve (V5 §3.3) — gating UI ; le serveur reste la source de vérité
   const { has } = usePermissions()
   const canCreateNc = has('action.approve')
+  const canCapa = has('capa.close')
 
   const load = useCallback(() => {
     setLoading(true)
@@ -222,7 +281,8 @@ export default function NonConformities() {
     load()
   }, [load])
 
-  if (loading) return <PageLoader label="Chargement des non-conformités…" />
+  // Le loader plein écran ne sert qu'au premier chargement : un rechargement après une saisie garde la ligne ouverte.
+  if (loading && ncs.length === 0) return <PageLoader label="Chargement des non-conformités…" />
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
@@ -255,7 +315,7 @@ export default function NonConformities() {
               hint="Tant que les processus sont conformes, rien n'apparaît ici. Une déclaration d'exception depuis une action créera automatiquement une NC."
             />
           ) : (
-            ncs.map((nc) => <NcRow key={nc.id} nc={nc} onChanged={load} />)
+            ncs.map((nc) => <NcRow key={nc.id} nc={nc} onChanged={load} canCapa={canCapa} />)
           )}
         </div>
       )}

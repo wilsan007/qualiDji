@@ -60,7 +60,7 @@ export interface GuideFacts {
   /** published : utilisables pour lancer une action (globaux compris) ; ownPublished : propres au tenant. */
   workflows?: { published: number; ownPublished: number; ownInProgress: number; toApprove: number; myDrafts: number }
   documents?: { published: number; toApprove: number; myDrafts: number; myInReview: number }
-  nc?: { open: number; withoutCapa: number; capaOverdue: number }
+  nc?: { open: number; withoutCapa: number; capaOverdue: number; capaToVerify?: number }
   matrix?: { applicable: number; blocking: number; toReview: number; naPending: number }
   audits?: { open: number; toStart: number; inProgress: number; toVerify: number; closable: number; toRespond: number }
   reviews?: { drafts: number; draftsWithoutInputs: number; lastHeldAt: string | null }
@@ -112,10 +112,10 @@ export const SCREEN_ACCESS: Record<GuideScreen, { perm?: string; anyPerm?: strin
   matrice: {},
   workflows: { perm: 'workflow.read' },
   users: { perm: 'user.manage' },
-  reports: { perm: 'action.approve' },
+  reports: { anyPerm: ['action.approve', 'audit.export'] },
   documents: { perm: 'document.read' },
-  audits: { anyPerm: ['internal_audit.manage', 'internal_audit.respond'] },
-  reviews: { perm: 'management_review.manage' },
+  audits: { anyPerm: ['internal_audit.manage', 'internal_audit.respond', 'internal_audit.read'] },
+  reviews: { anyPerm: ['management_review.manage', 'management_review.read'] },
 }
 
 /** Le rôle peut-il ouvrir cet écran ? Sinon le guide n'a pas à lui répondre (même règle que le menu). */
@@ -282,7 +282,9 @@ export function buildScreenGuide(screen: GuideScreen, f: GuideFacts): ScreenGuid
         steps.push({ id: 'nc-capa', status: 'todo', count: f.nc.withoutCapa, link: '/nc', label: `${plural(f.nc.withoutCapa, 'non-conformité', 'non-conformités')} sans plan CAPA` })
       }
       if (steps.length === 0) {
-        steps.push({ id: 'read-only', status: 'info', label: 'Accès en consultation', detail: 'Consultez les actions, les documents publiés, les non-conformités et la Matrice ISO depuis le menu.' })
+        steps.push(has('audit.export') && has('action.read_all')
+          ? { id: 'read-only', status: 'info', label: 'Accès d’audit en lecture seule', detail: 'Parcourez Prêt audit (journal), Rapports (CSV, paquet d’audit), Audits internes, Revues direction, Matrice ISO et Documents ; ouvrez une action pour consulter ses preuves et vérifier leur empreinte. Aucune modification n’est possible.' }
+          : { id: 'read-only', status: 'info', label: 'Accès en consultation', detail: 'Consultez les actions, les documents publiés, les non-conformités et la Matrice ISO depuis le menu.' })
       }
       break
     }
@@ -323,6 +325,7 @@ export function buildScreenGuide(screen: GuideScreen, f: GuideFacts): ScreenGuid
       if (has('capa.close') && f.nc) {
         steps.push(counted('nc-capa', f.nc.withoutCapa, `Lancer un plan CAPA pour ${plural(f.nc.withoutCapa, 'NC', 'NC')} qui n'en a pas`, 'Aucune NC ouverte sans plan CAPA', { detail: 'Ouvrez la NC → Lancer un plan CAPA : cause racine, action corrective, responsable, échéance.' }))
         if (f.nc.capaOverdue > 0) steps.push({ id: 'capa-overdue', status: 'todo', count: f.nc.capaOverdue, link: '/reports', label: `${plural(f.nc.capaOverdue, 'CAPA en retard', 'CAPA en retard')}`, detail: 'Relancez le responsable ou revoyez l’échéance.' })
+        if ((f.nc.capaToVerify ?? 0) > 0) steps.push({ id: 'capa-verify', status: 'todo', count: f.nc.capaToVerify, label: `Vérifier l'efficacité de ${plural(f.nc.capaToVerify!, 'CAPA', 'CAPA')}`, detail: 'Une fois l’action corrective réalisée : ouvrez la NC, puis Efficacité vérifiée (la NC est clôturée) ou Inefficace — rouvrir (la NC repasse en traitement).' })
       }
       if (has('action.approve')) steps.push({ id: 'nc-create', status: 'info', label: 'Enregistrer un écart constaté hors action', detail: 'Bouton Nouvelle non-conformité : titre de l’écart, gravité, puis Créer la NC.' })
       if (has('action.execute') && !has('action.assign')) steps.push({ id: 'nc-exception', status: 'info', label: 'Un écart sur une de vos actions ?', detail: 'Déclarez-le depuis l’action (Déclarer une exception) : la NC est créée et liée automatiquement.' })
@@ -396,13 +399,16 @@ export function buildScreenGuide(screen: GuideScreen, f: GuideFacts): ScreenGuid
       } else if (has('internal_audit.manage')) {
         steps.push({ id: 'audit-plan', status: 'info', label: 'Planifier un autre audit', detail: 'L’auditeur désigné doit être une autre personne que l’organisateur.' })
       }
+      if (steps.length === 0 && !has('internal_audit.respond') && !has('internal_audit.manage')) steps.push({ id: 'audit-readonly', status: 'info', label: 'Consultation des audits internes', detail: 'Programme, périmètre, constats (non modifiables), réponses des processus et vérifications d’efficacité : tout est en lecture seule.' })
       if (steps.length === 0) steps.push({ id: 'audit-none', status: 'done', label: 'Aucun constat ne vous attend', detail: 'Vous serez notifié si un auditeur vous désigne sur un constat.' })
       break
     }
     case 'reviews': {
       purpose = 'La revue de direction (ISO 9001 §9.3), préparée à partir des données déjà saisies.'
       const r = f.reviews
-      if (r) {
+      if (!has('management_review.manage')) {
+        steps.push({ id: 'review-readonly', status: 'info', label: 'Consultation des revues de direction', detail: 'Entrées consolidées, décisions et actions de chaque revue, en lecture seule.' })
+      } else if (r) {
         const lastHeldDays = r.lastHeldAt ? Math.floor((Date.now() - new Date(r.lastHeldAt).getTime()) / 86_400_000) : null
         if (r.drafts === 0) {
           steps.push(lastHeldDays === null || lastHeldDays > 365

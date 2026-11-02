@@ -7,6 +7,8 @@ export interface Action {
   workflow_id: string
   action_def_id: string
   assigned_to?: string
+  /** Exécutant en clair (GET /actions/:id) */
+  assignee?: { display_name: string | null; role: string; email: string | null } | null
   status: 'assigned' | 'in_progress' | 'submitted' | 'approved' | 'blocked' | 'closed'
   tenant_id: string
   due_at?: string

@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/auth'
 import { usePermissions } from '@/hooks/usePermissions'
 import Login from '@/pages/Login'
+import SetPassword from '@/pages/SetPassword'
 import Dashboard from '@/pages/Dashboard'
 import { installOfflineSync } from '@/lib/offline/db'
 import WorkflowExecution from '@/pages/WorkflowExecution'
@@ -67,6 +68,8 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<RequireGuest><Login /></RequireGuest>} />
+        {/* Lien d'invitation / de réinitialisation : la session vient du lien, pas d'un guest */}
+        <Route path="/set-password" element={<SetPassword />} />
         <Route element={<Layout />}>
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<RequireAuth><Dashboard /></RequireAuth>} />
@@ -77,10 +80,10 @@ export default function App() {
           <Route path="matrice" element={<RequireAuth><Traceability /></RequireAuth>} />
           <Route path="workflows" element={<RequirePermission any={['workflow.read']}><Workflows /></RequirePermission>} />
           <Route path="users" element={<RequirePermission any={['user.manage']}><Users /></RequirePermission>} />
-          <Route path="reports" element={<RequirePermission any={['action.approve']}><Reports /></RequirePermission>} />
+          <Route path="reports" element={<RequirePermission any={['action.approve', 'audit.export']}><Reports /></RequirePermission>} />
           <Route path="documents" element={<RequirePermission any={['document.read']}><Documents /></RequirePermission>} />
-          <Route path="audits" element={<RequirePermission any={['internal_audit.manage', 'internal_audit.respond']}><Audits /></RequirePermission>} />
-          <Route path="reviews" element={<RequirePermission any={['management_review.manage']}><Reviews /></RequirePermission>} />
+          <Route path="audits" element={<RequirePermission any={['internal_audit.manage', 'internal_audit.respond', 'internal_audit.read']}><Audits /></RequirePermission>} />
+          <Route path="reviews" element={<RequirePermission any={['management_review.manage', 'management_review.read']}><Reviews /></RequirePermission>} />
           {/* Toute route inconnue → tableau de bord (plus de pages blanches) */}
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Route>

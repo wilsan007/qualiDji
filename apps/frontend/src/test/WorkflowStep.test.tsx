@@ -112,3 +112,60 @@ describe('WorkflowStep — étape d\'approbation', () => {
     expect(screen.getByText(/personne distincte de l'exécutant/)).toBeInTheDocument()
   })
 })
+
+describe('WorkflowStep — tous les types de l’éditeur sont exécutables', () => {
+  const base: WStep = { ...CLIMATE, guardrails: [], choices: undefined, step_type: 'text_input' }
+
+  it('nombre : champ numérique, valeur numérique, règle min/max appliquée avant soumission', async () => {
+    const onValue = vi.fn()
+    render(<Host step={{ ...base, step_type: 'number_input', validation_rule: 'max:8' }} onValue={onValue} />)
+    const submit = screen.getByRole('button', { name: /Soumettre l'étape/ })
+    expect(submit).toBeDisabled()
+    await userEvent.type(screen.getByLabelText('Valeur numérique'), '12')
+    expect(submit).toBeDisabled()
+    await userEvent.clear(screen.getByLabelText('Valeur numérique'))
+    await userEvent.type(screen.getByLabelText('Valeur numérique'), '4.5')
+    expect(submit).toBeEnabled()
+    expect(onValue).toHaveBeenLastCalledWith(4.5)
+  })
+
+  it('confirmation obligatoire : « Je confirme » doit être cochée', async () => {
+    const onValue = vi.fn()
+    render(<Host step={{ ...base, step_type: 'confirmation' }} onValue={onValue} />)
+    const submit = screen.getByRole('button', { name: /Soumettre l'étape/ })
+    expect(submit).toBeDisabled()
+    await userEvent.click(screen.getByLabelText('Je confirme'))
+    expect(submit).toBeEnabled()
+    expect(onValue).toHaveBeenLastCalledWith(true)
+  })
+
+  it('date : valeur AAAA-MM-JJ', async () => {
+    const onValue = vi.fn()
+    render(<Host step={{ ...base, step_type: 'date' }} onValue={onValue} />)
+    await userEvent.type(screen.getByLabelText('Date'), '2026-11-02')
+    expect(onValue).toHaveBeenLastCalledWith('2026-11-02')
+  })
+
+  it('code-barres : référence texte obligatoire', async () => {
+    const onValue = vi.fn()
+    render(<Host step={{ ...base, step_type: 'barcode' }} onValue={onValue} />)
+    expect(screen.getByRole('button', { name: /Soumettre l'étape/ })).toBeDisabled()
+    await userEvent.type(screen.getByLabelText('Code-barres lu'), '3760123456789')
+    expect(screen.getByRole('button', { name: /Soumettre l'étape/ })).toBeEnabled()
+    expect(onValue).toHaveBeenLastCalledWith('3760123456789')
+  })
+
+  it('instruction : « Marquer comme lue » soumet la valeur true sans saisie', async () => {
+    const onSubmit = vi.fn()
+    render(<Host step={{ ...base, step_type: 'instruction' }} onValue={() => {}} onSubmit={onSubmit} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Marquer comme lue' }))
+    expect(onSubmit).toHaveBeenCalledWith(true)
+  })
+
+  it('lecture seule : aucun bouton de soumission, champs désactivés', () => {
+    render(<WorkflowStep step={base} value="déjà saisi" onChange={() => {}} onSubmit={() => {}} submitting={false} readOnly done />)
+    expect(screen.queryByRole('button')).toBeNull()
+    expect(screen.getByRole('textbox')).toBeDisabled()
+    expect(screen.getByText('Saisie enregistrée')).toBeInTheDocument()
+  })
+})

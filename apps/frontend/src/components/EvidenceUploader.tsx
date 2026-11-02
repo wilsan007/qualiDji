@@ -7,6 +7,8 @@ import { Paperclip, CheckCircle2, X, Download, ShieldCheck, ShieldAlert } from '
 interface EvidenceUploaderProps {
   actionId: string
   stepId: string
+  /** Consultation seule (action figée, auditeur, lecteur) : liste, vérification d'intégrité et téléchargement, sans dépôt. */
+  readOnly?: boolean
 }
 
 async function sha256Hex(file: File): Promise<string> {
@@ -19,7 +21,7 @@ function sizeLabel(bytes?: number): string {
   return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} Mo` : `${Math.max(1, Math.round(bytes / 1024))} Ko`
 }
 
-export function EvidenceUploader({ actionId, stepId }: EvidenceUploaderProps) {
+export function EvidenceUploader({ actionId, stepId, readOnly = false }: EvidenceUploaderProps) {
   const [files, setFiles] = useState<File[]>([])
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
@@ -94,8 +96,9 @@ export function EvidenceUploader({ actionId, stepId }: EvidenceUploaderProps) {
         <Paperclip className="w-4 h-4 text-slate-400" /> Preuves à joindre
       </p>
       <p className="text-xs text-slate-400 mb-3">
-        Photo, PDF, tableur ou texte (25 Mo max) — le fichier est stocké de façon privée et son empreinte SHA-256
-        est vérifiée par le serveur.
+        {readOnly
+          ? 'Pièces jointes à cette étape — l’empreinte SHA-256 enregistrée au dépôt permet de vérifier leur intégrité.'
+          : 'Photo, PDF, tableur ou texte (25 Mo max) — le fichier est stocké de façon privée et son empreinte SHA-256 est vérifiée par le serveur.'}
       </p>
 
       {items.length > 0 && (
@@ -125,7 +128,11 @@ export function EvidenceUploader({ actionId, stepId }: EvidenceUploaderProps) {
         </ul>
       )}
 
-      <input
+      {readOnly && items.length === 0 && (
+        <p className="text-xs text-slate-500">Aucune preuve enregistrée pour cette étape.</p>
+      )}
+
+      {!readOnly && <input
         ref={inputRef}
         type="file"
         multiple
@@ -134,7 +141,7 @@ export function EvidenceUploader({ actionId, stepId }: EvidenceUploaderProps) {
           file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0
           file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700
           hover:file:bg-blue-100 file:cursor-pointer"
-      />
+      />}
 
       {files.length > 0 && (
         <div className="mt-3 space-y-2">

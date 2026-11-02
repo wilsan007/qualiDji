@@ -2,6 +2,7 @@ import { Router } from 'express'
 import type { Router as ExpressRouter } from 'express'
 import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '../middleware/auth'
 import { supabaseAdmin } from '../lib/supabase'
+import { emailMap } from '../lib/authUsers'
 
 const router: ExpressRouter = Router()
 
@@ -42,7 +43,8 @@ router.get('/audit-readiness', requireAuth, requireTenant, requirePermission('au
     .eq('tenant_id', req.user!.tenant_id)
     .order('created_at', { ascending: false })
     .limit(100)
-  res.json({ events: data ?? [] })
+  const emails = await emailMap()
+  res.json({ events: (data ?? []).map((e) => ({ ...e, actor: e.actor_id ? (emails.get(e.actor_id) ?? null) : null })) })
 })
 
 export const dashboardRouter: ExpressRouter = router

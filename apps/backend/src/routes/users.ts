@@ -20,6 +20,16 @@ const router: ExpressRouter = Router()
 /** Codes GoTrue d'un quota atteint (erreur temporaire, à distinguer d'un refus définitif). */
 const INVITE_RATE_LIMIT_CODES = new Set(['over_email_send_rate_limit', 'over_request_rate_limit'])
 
+/**
+ * Page où l'invité choisit son mot de passe (frontend /set-password). APP_URL (prioritaire, ex. https://app.qualidji.fr)
+ * sinon l'origine de la requête de l'administrateur. GoTrue n'accepte que les URL de sa liste blanche
+ * (Auth → URL Configuration) et retombe sinon sur Site URL : l'origine n'est donc pas un vecteur de redirection libre.
+ */
+function setPasswordUrl(req: AuthedRequest): string | undefined {
+  const base = (process.env.APP_URL?.trim() || req.get('origin') || '').replace(/\/+$/, '')
+  return base ? `${base}/set-password` : undefined
+}
+
 const TENANT_ROLES = [
   'tenant_admin', 'quality_manager', 'site_manager', 'department_manager',
   'process_owner', 'operator', 'internal_auditor', 'external_auditor',
@@ -104,6 +114,7 @@ router.post('/invite', requireAuth, requireTenant, requirePermission('user.manag
 
   const { data: invited, error: invErr } = await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
     data: { role },
+    redirectTo: setPasswordUrl(req),
   })
   if (invErr) {
     const msg = invErr.message ?? ''
@@ -152,6 +163,15 @@ router.patch('/:id', requireAuth, requireTenant, requirePermission('user.manage'
   if (!profile) return
   if (!input.role && input.display_name === undefined) {
     return res.status(400).json({ error: 'role ou display_name requis' })
+  }
+  const roleChange = Boolean(input.role && input.role !== profile.role)
+  // Un changement de rôle est une décision de gouvernance : motif obligatoire (historique des rôles, notice §11)
+  if (roleChange && !input.reason?.trim()) {
+    return res.status(400).json({ error: 'motif obligatoire pour un changement de rôle', code: 'ERR_REASON_REQUIRED' })
+  }
+  // Personne ne change son propre rôle (évite de se retirer l'administration du tenant, ou de s'octroyer un rôle)
+  if (roleChange && profile.id === req.user?.id) {
+    return res.status(409).json({ error: 'impossible de modifier son propre rôle', code: 'ERR_SELF_ROLE_CHANGE' })
   }
 
   const now = new Date().toISOString()

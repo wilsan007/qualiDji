@@ -4,6 +4,7 @@ import {
   Plus, Send, Trash2, X, XCircle,
 } from 'lucide-react'
 import { usePermissions } from '@/hooks/usePermissions'
+import { roleLabel } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
   workflowsApi, WorkflowActionForm, WorkflowPayload, WorkflowStepForm, WorkflowSummary,
@@ -41,6 +42,43 @@ const STEP_TYPE_LABELS: Record<string, string> = {
   confirmation: 'Confirmation',
   knowledge_question: 'Question de connaissance',
   approval: 'Approbation',
+}
+
+/** Rôles de tenant proposables (valeur = code stocké dans la définition, libellé = affichage). */
+const ROLE_OPTIONS: { code: string; label: string }[] = [
+  'tenant_admin', 'quality_manager', 'site_manager', 'department_manager', 'process_owner',
+  'operator', 'internal_auditor', 'external_auditor', 'consultant', 'reader',
+].map((code) => ({ code, label: roleLabel(code) }))
+
+/** Garde-fou « justification obligatoire » d'un choix (grammaire du serveur : lib/stepValidation.ts). */
+const CHOICE_RE = /^\s*choice\s*==\s*'([^']*)'\s*$/
+function guardrailChoice(s: WorkflowStepForm): string {
+  const g = (s.guardrails ?? [])[0] as { condition?: string } | undefined
+  const m = g?.condition ? CHOICE_RE.exec(g.condition) : null
+  return m?.[1] ?? ''
+}
+function guardrailMin(s: WorkflowStepForm): number {
+  const g = (s.guardrails ?? [])[0] as { min_length?: number } | undefined
+  return g?.min_length ?? 100
+}
+
+/** Nettoie le formulaire avant envoi : choix sans lignes vides, garde-fou seulement sur un choix existant, rien d'inutile sur les autres types. */
+function sanitizeForm(form: WorkflowPayload): WorkflowPayload {
+  return {
+    ...form,
+    actions: form.actions.map((a) => ({
+      ...a,
+      steps: a.steps.map((st) => {
+        if (st.step_type === 'choice') {
+          const choices = ((st.choices ?? []) as unknown[]).map((c) => String(c).trim()).filter(Boolean)
+          const gc = guardrailChoice(st)
+          return { ...st, choices, guardrails: gc && choices.includes(gc) ? st.guardrails : [], approver_role: null, segregation_of_duties: false }
+        }
+        if (st.step_type === 'approval') return { ...st, choices: null, guardrails: [] }
+        return { ...st, choices: null, guardrails: [], approver_role: null, segregation_of_duties: false }
+      }),
+    })),
+  }
 }
 
 function emptyStep(seq: number): WorkflowStepForm {
@@ -155,7 +193,9 @@ export default function Workflows() {
   const [saving, setSaving] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState('')
 
-  const includeAll = canApprove && statusFilter !== 'published'
+  // Les auteurs (consultant, responsables de site/département…) ouvrent aussi les filtres : le serveur ne leur renvoie que leurs propres brouillons.
+  const canSeeDraftTabs = canApprove || canEditDraft || canCreate
+  const includeAll = canSeeDraftTabs && statusFilter !== 'published'
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -257,10 +297,10 @@ export default function Workflows() {
     setSaving(true)
     try {
       if (editor?.mode === 'edit') {
-        await workflowsApi.update(editor.id, form)
+        await workflowsApi.update(editor.id, sanitizeForm(form))
         flash('Brouillon mis à jour')
       } else {
-        await workflowsApi.create(form)
+        await workflowsApi.create(sanitizeForm(form))
         flash('Brouillon créé')
       }
       setEditor(null)
@@ -306,8 +346,8 @@ export default function Workflows() {
         )}
       </div>
 
-      {/* Filtres statut (réservés aux.approveurs : les autres ne voient que le publié) */}
-      {canApprove && (
+      {/* Filtres statut : approbateurs = tous les workflows ; auteurs = les publiés + leurs propres brouillons */}
+      {canSeeDraftTabs && (
         <div className="flex flex-wrap gap-2">
           {(['published', 'all', 'draft', 'in_review', 'deprecated'] as const).map((f) => (
             <button
@@ -622,8 +662,9 @@ function WorkflowEditor({
         </div>
         <div>
           <label className={labelCls}>Propriétaire (rôle)</label>
-          <input className={inputCls} value={form.owner_role} onChange={(e) => patch({ owner_role: e.target.value })}
-            placeholder="quality_manager" />
+<select className={inputCls} value={form.owner_role} onChange={(e) => patch({ owner_role: e.target.value })}>
+            {ROLE_OPTIONS.map((r) => <option key={r.code} value={r.code}>{r.label}</option>)}
+          </select>
         </div>
         {mode === 'create' && (
           <div>
@@ -662,8 +703,9 @@ function WorkflowEditor({
               </div>
               <div>
                 <label className={labelCls}>Rôle exécutant</label>
-                <input className={inputCls} value={a.assigned_role} onChange={(e) => patchAction(ai, { assigned_role: e.target.value })}
-                  placeholder="operator" />
+<select className={inputCls} value={a.assigned_role} onChange={(e) => patchAction(ai, { assigned_role: e.target.value })}>
+                  {ROLE_OPTIONS.map((r) => <option key={r.code} value={r.code}>{r.label}</option>)}
+                </select>
               </div>
             </div>
 
@@ -704,6 +746,56 @@ function WorkflowEditor({
                   <textarea rows={2} className={inputCls} value={s.instruction}
                     onChange={(e) => patchStep(ai, si, { instruction: e.target.value })}
                     placeholder="Instruction opérateur *" />
+                  {(s.step_type === 'text_input' || s.step_type === 'knowledge_question') && (
+                    <p className="text-[11px] text-slate-400">Règles possibles : min_length:N (au moins N caractères) · max_length:N</p>
+                  )}
+                  {(s.step_type === 'number_input' || s.step_type === 'sensor_value') && (
+                    <p className="text-[11px] text-slate-400">Règles possibles : min:N (valeur minimale) · max:N (valeur maximale)</p>
+                  )}
+                  {s.step_type === 'choice' && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-slate-50 rounded p-2 border border-slate-200">
+                      <div className="sm:col-span-2">
+                        <label className="block text-xs font-medium text-slate-600 mb-1">Choix proposés * (un par ligne)</label>
+                        <textarea rows={3} className={inputCls} value={((s.choices ?? []) as unknown[]).join('\n')}
+                          onChange={(e) => patchStep(ai, si, { choices: e.target.value.split('\n') })}
+                          placeholder={'pertinent\nnon_pertinent\na_evaluer'} />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-slate-600 mb-1">Justification obligatoire si le choix est…</label>
+                        <select className={inputCls} value={guardrailChoice(s)}
+                          onChange={(e) => patchStep(ai, si, { guardrails: e.target.value ? [{ condition: `choice == '${e.target.value}'`, action: 'require_justification', min_length: guardrailMin(s) }] : [] })}>
+                          <option value="">(aucune)</option>
+                          {((s.choices ?? []) as unknown[]).map((c) => String(c).trim()).filter(Boolean).map((c) => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
+                      {guardrailChoice(s) && (
+                        <div>
+                          <label className="block text-xs font-medium text-slate-600 mb-1">Longueur minimale de la justification</label>
+                          <input type="number" min={1} max={2000} className={inputCls} value={guardrailMin(s)}
+                            onChange={(e) => patchStep(ai, si, { guardrails: [{ condition: `choice == '${guardrailChoice(s)}'`, action: 'require_justification', min_length: Math.max(1, Number(e.target.value) || 1) }] })} />
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {s.step_type === 'approval' && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-slate-50 rounded p-2 border border-slate-200">
+                      <div>
+                        <label className="block text-xs font-medium text-slate-600 mb-1">Rôle approbateur</label>
+                        <select className={inputCls} value={s.approver_role ?? ''} onChange={(e) => patchStep(ai, si, { approver_role: e.target.value || null })}>
+                          <option value="">(tout approbateur habilité)</option>
+                          {ROLE_OPTIONS.map((r) => <option key={r.code} value={r.code}>{r.label}</option>)}
+                        </select>
+                      </div>
+                      <label className="flex items-center gap-1.5 text-xs text-slate-600 self-end pb-2">
+                        <input type="checkbox" checked={Boolean(s.segregation_of_duties)} onChange={(e) => patchStep(ai, si, { segregation_of_duties: e.target.checked })} />
+                        Approbateur distinct de l'exécutant
+                      </label>
+                    </div>
+                  )}
+                  <label className="flex items-center gap-1.5 text-xs text-slate-600">
+                    <input type="checkbox" checked={s.ai_guidance_enabled !== false} onChange={(e) => patchStep(ai, si, { ai_guidance_enabled: e.target.checked })} />
+                    Guidage IA disponible pour cette étape
+                  </label>
                 </div>
               ))}
               <button

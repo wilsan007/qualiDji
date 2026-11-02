@@ -6,7 +6,7 @@ import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '..
 import { supabaseAdmin } from '../lib/supabase'
 import { dbFail } from '../lib/http'
 import { writeAudit } from '../lib/audit'
-import { canSeeAction, canSeeAllActions } from '../lib/access'
+import { canSeeAction, canSeeAllActions, canManageAllActions, canWriteAction } from '../lib/access'
 import {
   DEFAULT_MAX_BYTES, buildStoragePath, checkFile, isSha256Hex, sanitizeFilename, sha256Hex,
 } from '../lib/evidenceFile'
@@ -91,8 +91,8 @@ router.post(
       .eq('id', action_id)
       .eq('tenant_id', tenantId)
       .maybeSingle()
-    if (!action || !canSeeAction(req, action)) return res.status(404).json({ error: 'action not found' })
-    const manager = canSeeAllActions(req)
+    if (!action || !canWriteAction(req, action)) return res.status(404).json({ error: 'action not found' })
+    const manager = canManageAllActions(req)
     if (TERMINAL.includes(action.status) || (action.status === 'submitted' && !manager)) {
       return res.status(409).json({ error: `dépôt impossible : statut ${action.status}`, code: 'ERR_ACTION_STATUS' })
     }
@@ -186,10 +186,10 @@ router.post('/', requireAuth, requireTenant, requirePermission('evidence.upload'
 
   const { data: action } = await supabaseAdmin
     .from('actions').select('id, action_def_id, assigned_to, status').eq('id', action_id).eq('tenant_id', tenantId).maybeSingle()
-  if (!action || !canSeeAction(req, action)) return res.status(404).json({ error: 'action not found' })
+  if (!action || !canWriteAction(req, action)) return res.status(404).json({ error: 'action not found' })
   // Même garde-fou que /upload : une action soumise n'accepte plus de preuve
   // de l'exécutant (seul un gestionnaire — approbateur — peut encore en déposer).
-  const manager = canSeeAllActions(req)
+  const manager = canManageAllActions(req)
   if (TERMINAL.includes(action.status) || (action.status === 'submitted' && !manager)) {
     return res.status(409).json({ error: `dépôt impossible : statut ${action.status}`, code: 'ERR_ACTION_STATUS' })
   }

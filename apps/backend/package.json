@@ -16,6 +16,7 @@
     "test:offline": "tsx scripts/test_offline_queue.ts",
     "test:e2e": "bash scripts/e2e_rbac.sh",
     "provision:e2e": "tsx scripts/provision_e2e.ts",
+    "tenant:create": "tsx scripts/create_tenant.ts",
     "cleanup:e2e": "tsx scripts/cleanup_e2e_accounts.ts",
     "lint": "eslint src scripts --max-warnings 0",
     "test:steps": "tsx scripts/test_step_validation.ts",

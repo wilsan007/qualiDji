@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useAuthStore } from '@/stores/auth'
+import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/Button'
 import { ShieldCheck, Mail, Lock, LogIn } from 'lucide-react'
 
@@ -8,6 +9,8 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [forgot, setForgot] = useState(false)
+  const [sent, setSent] = useState(false)
   const signIn = useAuthStore((s) => s.signIn)
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -19,10 +22,21 @@ export default function Login() {
     if (err) setError(err)
   }
 
-  const fillDemo = () => {
-    setEmail('test@qualidji.fr')
-    setPassword('TestPass123')
+  /** Mot de passe oublié : lien à usage unique vers /set-password. Réponse neutre (aucune indication sur l'existence du compte). */
+  const handleForgot = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setLoading(true)
     setError('')
+    const { error: err } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/set-password`,
+    })
+    setLoading(false)
+    // Un quota d'envoi atteint est une information utile (réessayer plus tard) ; le reste reste neutre.
+    if (err && (err.status === 429 || /rate limit/i.test(err.message))) {
+      setError("Trop de demandes d'e-mail : réessayez dans quelques minutes.")
+      return
+    }
+    setSent(true)
   }
 
   return (
@@ -40,6 +54,51 @@ export default function Login() {
         </div>
 
         <div className="card p-8">
+          {forgot ? (
+            <form onSubmit={handleForgot} className="space-y-5">
+              <p className="text-sm text-slate-600">
+                Saisissez votre e-mail professionnel : si un compte existe, vous recevrez un lien (à usage unique) pour choisir un nouveau mot de passe.
+              </p>
+              <div>
+                <label className="label" htmlFor="forgot-email">Email professionnel</label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+                  <input
+                    id="forgot-email"
+                    className="input pl-10"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    type="email"
+                    required
+                    autoComplete="email"
+                    placeholder="prenom.nom@entreprise.fr"
+                  />
+                </div>
+              </div>
+              {error && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200">
+                  <p className="text-sm text-red-700">{error}</p>
+                </div>
+              )}
+              {sent && (
+                <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200">
+                  <p className="text-sm text-emerald-800">
+                    Si un compte existe pour cette adresse, un e-mail vient d'être envoyé. Ouvrez le lien qu'il contient.
+                  </p>
+                </div>
+              )}
+              <Button type="submit" loading={loading} disabled={sent} className="w-full">
+                Envoyer le lien
+              </Button>
+              <button
+                type="button"
+                onClick={() => { setForgot(false); setSent(false); setError('') }}
+                className="w-full text-center text-sm font-medium text-blue-600 hover:text-blue-700"
+              >
+                Retour à la connexion
+              </button>
+            </form>
+          ) : (
           <form onSubmit={handleSubmit} className="space-y-5">
             <div>
               <label className="label" htmlFor="login-email">Email professionnel</label>
@@ -84,19 +143,15 @@ export default function Login() {
             <Button type="submit" loading={loading} className="w-full">
               <LogIn className="w-4 h-4 mr-2" /> Se connecter
             </Button>
-          </form>
-
-          <div className="mt-6 p-3 bg-slate-50 rounded-lg text-xs text-slate-500 space-y-1.5 border border-slate-100">
-            <p className="font-medium text-slate-600">Compte de démonstration</p>
-            <p>test@qualidji.fr — TestPass123</p>
             <button
               type="button"
-              onClick={fillDemo}
-              className="text-blue-600 hover:text-blue-700 font-medium transition-colors"
+              onClick={() => { setForgot(true); setError('') }}
+              className="w-full text-center text-sm font-medium text-blue-600 hover:text-blue-700"
             >
-              Remplir automatiquement →
+              Mot de passe oublié ?
             </button>
-          </div>
+          </form>
+          )}
         </div>
       </div>
     </div>

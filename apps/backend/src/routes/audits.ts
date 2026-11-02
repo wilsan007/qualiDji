@@ -18,7 +18,8 @@ const router: ExpressRouter = Router()
 
 /** Rôles habilités à être désignés auditeur (contrôlé côté serveur, pas seulement dans le formulaire). */
 const AUDITOR_ROLES = ['tenant_admin', 'quality_manager', 'internal_auditor']
-const ACCESS_AUDITS = ['internal_audit.manage', 'internal_audit.respond']
+/** Consultation : gestion, réponse, ou lecture seule (auditeur externe). Toute écriture reste gardée par manage/respond. */
+const ACCESS_AUDITS = ['internal_audit.manage', 'internal_audit.respond', 'internal_audit.read']
 
 const auditInput = z.object({
   title: z.string().min(3).max(300),
@@ -82,7 +83,23 @@ router.get('/', requireAuth, requireTenant, requireAnyPermission(ACCESS_AUDITS),
     list.push(f)
     byAudit.set(f.audit_id, list)
   }
-  res.json({ audits: (audits ?? []).map((a) => ({ ...a, findings: byAudit.get(a.id) ?? [] })) })
+  // Noms en clair (jamais l'UUID seul) : auditeur, responsable de processus, répondant, vérificateur — profils du même tenant
+  const { data: profs } = await supabaseAdmin.from('user_profiles').select('id, display_name').eq('tenant_id', req.user!.tenant_id!)
+  const emails = await emailMap()
+  const who = new Map((profs ?? []).map((p) => [p.id, p.display_name || emails.get(p.id) || null]))
+  const label = (id: string | null | undefined) => (id ? who.get(id) ?? null : null)
+  res.json({
+    audits: (audits ?? []).map((a) => ({
+      ...a,
+      auditor_label: label(a.auditor_id),
+      findings: (byAudit.get(a.id) ?? []).map((f) => ({
+        ...f,
+        process_owner_label: label(f.process_owner_id),
+        responded_by_label: label(f.responded_by),
+        verified_by_label: label(f.verified_by),
+      })),
+    })),
+  })
 })
 
 // ── Détail ──────────────────────────────────────────────────────────────────

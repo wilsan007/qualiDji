@@ -198,7 +198,17 @@ router.get('/:id', requireAuth, requireTenant, requirePermission('action.read'),
   )
   if (!action) return
   if (hideIfNotVisible(req, res, action)) return
-  res.json({ action })
+  // Nom lisible de l'exécutant (jamais l'UUID seul) : profil du même tenant + e-mail du compte
+  let assignee: { display_name: string | null; role: string; email: string | null } | null = null
+  if (action.assigned_to) {
+    const { data: p } = await supabaseAdmin.from('user_profiles').select('display_name, role')
+      .eq('id', action.assigned_to).eq('tenant_id', req.user!.tenant_id!).maybeSingle()
+    if (p) {
+      const { data: u } = await supabaseAdmin.auth.admin.getUserById(action.assigned_to)
+      assignee = { display_name: p.display_name ?? null, role: p.role, email: u?.user?.email ?? null }
+    }
+  }
+  res.json({ action: { ...action, assignee } })
 })
 
 // Réassignation (action.assign) — tant que l'action n'est ni soumise ni terminée

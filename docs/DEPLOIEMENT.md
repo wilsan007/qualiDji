@@ -57,6 +57,7 @@ Secrets nécessaires :
 | `SUPABASE_SERVICE_ROLE_KEY` | provision E2E, RLS, seeds |
 | `SUPABASE_URL` / `SUPABASE_ANON_KEY` | accès REST à la base |
 | `CORS_ORIGIN` | origines autorisées (CSV) |
+| `APP_URL` | adresse publique du site (ex. `https://qualidji.<compte>.workers.dev`) : cible du lien d'invitation (`/set-password`). À défaut, l'origine de la requête de l'administrateur |
 | `RATE_LIMIT_API` / `RATE_LIMIT_WINDOW_MS` | protection de l'API (s'applique à tout `/api/v1`, `/me` compris) |
 | `TRUST_PROXY` | nombre de reverse proxys devant le backend (`1`, `2`…), `loopback`/`uniquelocal` ou liste d'IP/CIDR ; vide = aucun proxy ; `true` refusé |
 | `EVIDENCE_MAX_BYTES` | taille max d'une preuve en octets (défaut 25 Mio, aligné sur le bucket `evidence`) ; le fichier est tenu en mémoire pendant le dépôt |
@@ -354,3 +355,25 @@ crée à lui seul une nouvelle version du Worker déployé : pas de redéploieme
 Ne jamais commiter de clé : `.env` est ignoré par git, et `wrangler.jsonc` ne doit
 contenir aucune valeur secrète.
 
+---
+
+## 14. Ouvrir une entreprise cliente, inviter, réinitialiser un mot de passe
+
+QualiDji n'a pas d'inscription libre : une entreprise (tenant) est ouverte par l'opérateur de la plateforme ou le cabinet qui l'accompagne.
+
+1. **Migration 0021** (lecture seule des auditeurs, cycle de vie CAPA) à appliquer avant le déploiement du code : `supabase db push --db-url <chaîne> --dry-run`, puis sans `--dry-run`. Le code qui l'accompagne (`action.read_all`, `internal_audit.read`, `management_review.read`) suppose ces permissions.
+2. **Supabase → Authentication → URL Configuration** : `Site URL` = adresse du site ; `Redirect URLs` = `https://<site>/**` (sans cela, le lien d'invitation retombe sur la Site URL). Désactiver *Allow new users to sign up* (produit sur invitation uniquement).
+3. **Supabase → Authentication → Email Templates** : coller le contenu de `supabase/templates/invite.html` (« Invite user ») et `recovery.html` (« Reset password ») ; objets : « Invitation à rejoindre QualiDji » / « Réinitialisation de votre mot de passe QualiDji ». Un SMTP transactionnel est requis en production (le quota intégré est d'environ 1 e-mail par heure).
+4. **Créer l'entreprise** (clé de service requise) :
+
+```bash
+ALLOW_REMOTE_PROVISIONING=1 APP_URL=https://<site> \
+SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
+pnpm --filter @iso/backend tenant:create -- --name "Atelier Djibouti SARL" \
+  --admin-email direction@atelier.example --admin-name "A. Direction" \
+  --also quality_manager:qualite@atelier.example:"B. Qualité" \
+  --also consultant:conseil@cabinet.example
+```
+
+Le script crée le tenant, invite l'administrateur (rôle `tenant_admin`) et les comptes `--also`, sans jamais manipuler de mot de passe. Chaque invité ouvre le lien reçu, choisit son mot de passe sur `/set-password`, puis arrive sur son tableau de bord. Un compte appartient à **un seul** tenant : un consultant qui accompagne plusieurs entreprises reçoit un compte par entreprise.
+5. **Mot de passe oublié** : lien sur la page de connexion ; même page `/set-password` ; réponse neutre (aucune indication sur l'existence du compte).

@@ -51,8 +51,13 @@ export interface Assignee {
 }
 
 export const actionsApi = {
-  list: (params?: { status?: string }) =>
-    apiFetch('/actions/assigned' + (params?.status ? `?status=${params.status}` : '')),
+  list: (params?: { status?: string; offset?: number }) => {
+    const q = new URLSearchParams()
+    if (params?.status) q.set('status', params.status)
+    if (params?.offset) q.set('offset', String(params.offset))
+    const qs = q.toString()
+    return apiFetch('/actions/assigned' + (qs ? `?${qs}` : ''))
+  },
   get: (id: string) => apiFetch(`/actions/${id}`),
   start: (id: string) => apiFetch(`/actions/${id}/start`, { method: 'POST' }),
   submit: (id: string) => apiFetch(`/actions/${id}/submit`, { method: 'POST' }),
@@ -449,6 +454,8 @@ export const reportsApi = {
     downloadCsv('/reports/actions.csv' + qsOf(params), `rapport_actions_${new Date().toISOString().slice(0, 10)}.csv`),
   exportNcCapa: () =>
     downloadCsv('/reports/nc-capa.csv', `registre_nc_capa_${new Date().toISOString().slice(0, 10)}.csv`),
+  exportAuditLog: () =>
+    downloadCsv('/reports/audit-log.csv', `journal_audit_${new Date().toISOString().slice(0, 10)}.csv`),
 }
 
 // §8.6 Documents contrôlés

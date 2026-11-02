@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import type { Router as ExpressRouter } from 'express'
 import { z } from 'zod'
-import { requireAuth, requireTenant, requirePermission, AuthedRequest } from '../middleware/auth'
+import { requireAuth, requireTenant, requirePermission, requireAnyPermission, AuthedRequest } from '../middleware/auth'
 import { supabaseAdmin } from '../lib/supabase'
 import { loadActionsReport, loadNcCapaReport } from './reports'
 import { createHash } from 'crypto'
@@ -46,8 +46,8 @@ export function canonicalJson(value: unknown): string {
   return JSON.stringify(value)
 }
 
-// ── Liste ───────────────────────────────────────────────────────────────────
-router.get('/', requireAuth, requireTenant, requirePermission('management_review.manage'), async (req: AuthedRequest, res) => {
+// ── Liste (gestion, ou lecture seule : auditeurs) ───────────────────────────
+router.get('/', requireAuth, requireTenant, requireAnyPermission(['management_review.manage', 'management_review.read']), async (req: AuthedRequest, res) => {
   const { data, error } = await supabaseAdmin
     .from('management_reviews').select('*').eq('tenant_id', req.user!.tenant_id!)
     .order('created_at', { ascending: false })
