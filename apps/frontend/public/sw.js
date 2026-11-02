@@ -22,7 +22,8 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url)
   // Jamais de cache sur les données authentifiées ni les appels API
-  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/assets/')) {
+  // /health : réveil du serveur à l'ouverture de la page — jamais répondu par le shell hors ligne
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/assets/') || url.pathname === '/health') {
     return // défaut réseau
   }
   if (event.request.method !== 'GET' || url.origin !== self.location.origin) return
