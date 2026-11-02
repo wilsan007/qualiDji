@@ -2,22 +2,17 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { Ban, CheckCircle2, ChevronDown, ChevronRight, History, UserPlus, Users2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { usersApi, TenantUser } from '@/lib/api'
+import { useAuthStore } from '@/stores/auth'
+import { roleLabel } from '@/lib/format'
 
 /** §3.4 Gestion des utilisateurs — accès réservé aux détenteurs de user.manage
  * (tenant_admin / super_admin / technical_admin). */
 
-const ROLE_LABELS: Record<string, string> = {
-  tenant_admin: 'Admin tenant',
-  quality_manager: 'Responsable qualité',
-  site_manager: 'Responsable site',
-  department_manager: 'Responsable département',
-  process_owner: 'Propriétaire de processus',
-  operator: 'Opérateur',
-  internal_auditor: 'Auditeur interne',
-  external_auditor: 'Auditeur externe',
-  consultant: 'Consultant',
-  reader: 'Lecteur',
-}
+/** Libellés uniformes avec le reste de l'application (lib/format.ts). */
+const ROLE_LABELS: Record<string, string> = Object.fromEntries(
+  ['tenant_admin', 'quality_manager', 'site_manager', 'department_manager', 'process_owner', 'operator', 'internal_auditor', 'external_auditor', 'consultant', 'reader']
+    .map((code) => [code, roleLabel(code)]),
+)
 
 const inputCls =
   'w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white'
@@ -31,7 +26,11 @@ function fmtDate(iso: string | null | undefined): string {
 type RoleHistoryEntry = { old_role: string | null; new_role: string; reason: string | null; created_at: string }
 
 export default function Users() {
+  const meId = useAuthStore((st) => st.user?.id)
   const [users, setUsers] = useState<TenantUser[]>([])
+  // Changement de rôle en attente de son motif (obligatoire : historique des rôles)
+  const [pendingRole, setPendingRole] = useState<{ id: string; role: string } | null>(null)
+  const [roleReason, setRoleReason] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -208,8 +207,9 @@ export default function Users() {
                       <select
                         className="border border-slate-200 rounded-md px-2 py-1 text-xs bg-white"
                         value={u.role}
-                        disabled={busyId === u.id}
-                        onChange={(e) => void run(u.id, () => usersApi.update(u.id, { role: e.target.value }), `Rôle mis à jour : ${ROLE_LABELS[e.target.value] ?? e.target.value}`)}
+                        disabled={busyId === u.id || u.id === meId}
+                        title={u.id === meId ? 'Vous ne pouvez pas modifier votre propre rôle' : undefined}
+                        onChange={(e) => { setPendingRole({ id: u.id, role: e.target.value }); setRoleReason('') }}
                       >
                         {Object.entries(ROLE_LABELS).map(([code, lbl]) => (
                           <option key={code} value={code}>{lbl}</option>
@@ -227,8 +227,8 @@ export default function Users() {
                     <td className="px-4 py-2.5 text-right">
                       {u.is_active ? (
                         <button
+                          disabled={busyId === u.id || u.id === meId}
                           onClick={() => void run(u.id, () => usersApi.deactivate(u.id), 'Utilisateur suspendu (sessions révoquées)')}
-                          disabled={busyId === u.id}
                           title="Suspendre (révoque les sessions)"
                           className="p-1.5 rounded-md hover:bg-rose-50 disabled:opacity-40"
                         >
@@ -246,6 +246,34 @@ export default function Users() {
                       )}
                     </td>
                   </tr>
+                  {pendingRole?.id === u.id && pendingRole.role !== u.role && (
+                    <tr className="bg-amber-50/60">
+                      <td colSpan={6} className="px-6 py-3 border-t border-amber-100">
+                        <p className="text-xs text-amber-900 mb-2">
+                          Changer le rôle de <span className="font-semibold">{u.email ?? u.id.slice(0, 8)}</span> de {ROLE_LABELS[u.role] ?? u.role} vers <span className="font-semibold">{ROLE_LABELS[pendingRole.role] ?? pendingRole.role}</span>. Le motif est conservé dans l'historique.
+                        </p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <input
+                            className={inputCls + ' max-w-md'}
+                            placeholder="Motif du changement de rôle *"
+                            aria-label="Motif du changement de rôle"
+                            value={roleReason}
+                            onChange={(e) => setRoleReason(e.target.value)}
+                          />
+                          <button
+                            onClick={() => void run(u.id, () => usersApi.update(u.id, { role: pendingRole.role, reason: roleReason.trim() }), `Rôle mis à jour : ${ROLE_LABELS[pendingRole.role] ?? pendingRole.role}`).then(() => setPendingRole(null))}
+                            disabled={busyId === u.id || roleReason.trim().length < 3}
+                            className="px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                          >
+                            Confirmer le changement
+                          </button>
+                          <button onClick={() => setPendingRole(null)} className="px-3 py-1.5 text-sm rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50">
+                            Annuler
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                   {expanded === u.id && (
                     <tr className="bg-slate-50/60">
                       <td colSpan={6} className="px-6 py-3 border-t border-slate-100">

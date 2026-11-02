@@ -86,7 +86,9 @@ export default function Documents() {
   const [saving, setSaving] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState('')
 
-  const showAll = canApprove && includeAll
+  // Approbateurs : tous les brouillons/retirés ; auteurs : leurs propres brouillons (filtrés par le serveur).
+  const canSeeDrafts = canApprove || canCreate || canEditDraft
+  const showAll = canSeeDrafts && includeAll
   const load = useCallback(async () => {
     setLoading(true)
     try {
@@ -182,10 +184,10 @@ export default function Documents() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {canApprove && (
+          {canSeeDrafts && (
             <label className="flex items-center gap-1.5 text-xs text-slate-600">
               <input type="checkbox" checked={includeAll} onChange={(e) => setIncludeAll(e.target.checked)} />
-              Afficher brouillons/retirés
+              {canApprove ? 'Afficher brouillons/retirés' : 'Afficher mes brouillons'}
             </label>
           )}
           {canCreate && !editor && (

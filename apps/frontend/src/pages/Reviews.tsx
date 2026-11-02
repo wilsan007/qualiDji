@@ -7,6 +7,42 @@ import { reviewsApi } from '@/lib/api'
 /** §9.3 Revues de direction — entrées consolidées (données enregistrées),
  * décisions et actions ; tenue impossible sans entrées ET décisions. */
 
+const STATUS_FR: Record<string, string> = { assigned: 'assignées', in_progress: 'en cours', submitted: 'soumises', approved: 'approuvées', blocked: 'bloquées', closed: 'clôturées' }
+const SEV_FR: Record<string, string> = { minor: 'mineures', major: 'majeures', critical: 'critiques' }
+const CAPA_FR: Record<string, string> = { open: 'ouvertes', implemented: 'réalisées', verified: 'efficacité vérifiée', closed: 'clôturées', reopened: 'rouvertes' }
+
+const dist = (o: Record<string, number> | undefined, names: Record<string, string>) =>
+  o && Object.keys(o).length ? Object.entries(o).map(([k, n]) => `${n} ${names[k] ?? k}`).join(', ') : 'aucune'
+
+/** Entrées consolidées lisibles (chiffres enregistrés ; le JSON brut reste la preuve scellée côté serveur). */
+function InputsSummary({ inputs }: { inputs: any }) {
+  // Forme inconnue (anciennes revues) : le contenu enregistré est montré tel quel
+  if (!inputs.actions && !inputs.nc_capa) {
+    return <pre className="text-[11px] text-slate-600 bg-slate-50 rounded p-2 overflow-x-auto">{JSON.stringify(inputs, null, 1)}</pre>
+  }
+  const rows: [string, string][] = [
+    ['Actions', `${inputs.actions?.total ?? 0} au total — ${dist(inputs.actions?.by_status, STATUS_FR)} ; en retard : ${inputs.actions?.overdue_count ?? 0}`],
+    ['Non-conformités', `${inputs.nc_capa?.total_nc ?? 0} au total, ${inputs.nc_capa?.open_nc ?? 0} ouverte(s) — gravité : ${dist(inputs.nc_capa?.by_severity, SEV_FR)}`],
+    ['CAPA', `${inputs.nc_capa?.total_capa ?? 0} au total — ${dist(inputs.nc_capa?.capa_by_status, CAPA_FR)} ; en retard : ${inputs.nc_capa?.capa_overdue_count ?? 0} ; efficacité non conforme : ${inputs.nc_capa?.effectiveness_ineffective ?? 0}`],
+    ['Audits internes', `${inputs.audits?.total ?? 0} au total, ${inputs.audits?.closed ?? 0} clôturé(s)`],
+  ]
+  return (
+    <div className="bg-slate-50 rounded p-3 border border-slate-200">
+      <dl className="space-y-1">
+        {rows.map(([k, v]) => (
+          <div key={k} className="flex flex-wrap gap-x-2 text-xs">
+            <dt className="font-semibold text-slate-600 w-36 shrink-0">{k}</dt>
+            <dd className="text-slate-700">{v}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="text-[11px] text-slate-400 mt-2">
+        Consolidé le {inputs.generated_at ? new Date(inputs.generated_at).toLocaleString('fr-FR') : '—'} par {inputs.generated_by ?? '—'} — {inputs.source ?? 'données enregistrées'}
+      </p>
+    </div>
+  )
+}
+
 const inputCls = 'w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500'
 
 export default function Reviews() {
@@ -105,7 +141,10 @@ export default function Reviews() {
             <div key={r.id} className={cn('bg-white rounded-xl border p-4 cursor-pointer transition-colors', selected === r.id ? 'border-blue-300' : 'border-slate-200 hover:border-slate-300')}
               onClick={() => setSelected(selected === r.id ? null : r.id)}>
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="font-semibold text-slate-800">{r.title}</p>
+                <div>
+                  <p className="font-semibold text-slate-800">{r.title}</p>
+                  {r.held_at && <p className="text-[11px] text-slate-400">Tenue le {new Date(r.held_at).toLocaleDateString('fr-FR')}</p>}
+                </div>
                 <div className="flex items-center gap-2">
                   <span className={cn('badge', r.status === 'held' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-700')}>
                     {r.status === 'held' ? 'Tenue' : 'Brouillon'}
@@ -126,7 +165,7 @@ export default function Reviews() {
                   <div>
                     <p className="text-xs font-semibold text-slate-600 mb-1">Entrées consolidées (données enregistrées — aucun texte IA)</p>
                     {current?.inputs && Object.keys(current.inputs).length > 0 ? (
-                      <pre className="text-[11px] text-slate-600 bg-slate-50 rounded p-2 overflow-x-auto">{JSON.stringify(current.inputs, null, 1)}</pre>
+                      <InputsSummary inputs={current.inputs} />
                     ) : (
                       <p className="text-xs text-slate-400">Aucune entrée — cliquez sur « Consolider les entrées ».</p>
                     )}

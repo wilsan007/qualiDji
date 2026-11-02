@@ -7,25 +7,64 @@ interface WorkflowStepProps {
   step: WorkflowStep
   value?: any
   onChange: (value: any) => void
-  onSubmit: () => void
+  /** `value` : valeur à soumettre quand elle n'est pas encore remontée au parent (étape d'information). */
+  onSubmit: (value?: any) => void
   submitting: boolean
+  /** L'étape a déjà une saisie enregistrée. */
+  done?: boolean
+  /** Action non modifiable (soumise, approuvée…) ou lecteur : consultation seule. */
+  readOnly?: boolean
 }
 
 function stepTypeLabel(t: string): string {
   switch (t) {
+    case 'instruction':
+      return 'Instruction'
     case 'text_input':
       return 'Saisie texte'
+    case 'knowledge_question':
+      return 'Question de connaissance'
     case 'choice':
       return 'Choix'
     case 'approval':
       return 'Validation'
-    case 'number':
+    case 'number_input':
       return 'Saisie numérique'
+    case 'sensor_value':
+      return 'Valeur de capteur'
+    case 'checkbox':
+      return 'Case à cocher'
+    case 'confirmation':
+      return 'Confirmation'
+    case 'date':
+      return 'Date'
+    case 'signature':
+      return 'Signature'
+    case 'photo':
+      return 'Photo'
+    case 'file_upload':
+      return 'Fichier'
+    case 'barcode':
+      return 'Code-barres'
+    case 'qr_scan':
+      return 'QR code'
+    case 'location_check':
+      return 'Position'
     case 'evidence':
       return 'Preuve à joindre'
     default:
       return t
   }
+}
+
+/** Étapes dont la réponse est une référence texte (code lu, lieu, nom du signataire, description de la pièce jointe). */
+const REFERENCE_STEPS: Record<string, { label: string; placeholder: string }> = {
+  signature: { label: 'Nom du signataire', placeholder: 'Prénom Nom (vaut signature de l’étape)' },
+  photo: { label: 'Description de la photo jointe', placeholder: 'Ce que montre la photo — la pièce se joint dans « Preuves »' },
+  file_upload: { label: 'Description du fichier joint', placeholder: 'Nature du fichier — la pièce se joint dans « Preuves »' },
+  barcode: { label: 'Code-barres lu', placeholder: 'Valeur du code-barres' },
+  qr_scan: { label: 'Contenu du QR code', placeholder: 'Contenu lu sur le QR code' },
+  location_check: { label: 'Lieu / position constatés', placeholder: 'Atelier, zone, rayonnage, coordonnées…' },
 }
 
 function ruleLabel(rule?: string): string | null {
@@ -46,7 +85,7 @@ function splitChoice(v: any): { choice: string | null; justification: string } {
   return { choice: typeof v === 'string' ? v : null, justification: '' }
 }
 
-export function WorkflowStep({ step, value, onChange, onSubmit, submitting }: WorkflowStepProps) {
+export function WorkflowStep({ step, value, onChange, onSubmit, submitting, done = false, readOnly = false }: WorkflowStepProps) {
   const [localValue, setLocalValue] = useState<any>(value ?? null)
 
   const handleChange = (v: any) => {
@@ -67,6 +106,17 @@ export function WorkflowStep({ step, value, onChange, onSubmit, submitting }: Wo
       if (!choice) return !step.required
       if (needJustification !== null) return justification.trim().length >= needJustification
       return true
+    }
+    if (step.step_type === 'instruction') return true
+    if (step.step_type === 'confirmation') return step.required ? localValue === true : typeof localValue === 'boolean'
+    if (step.step_type === 'checkbox') return typeof localValue === 'boolean' || !step.required
+    if (step.step_type === 'number_input' || step.step_type === 'sensor_value') {
+      if (localValue == null || localValue === '') return !step.required
+      const n = typeof localValue === 'number' ? localValue : Number(localValue)
+      if (!Number.isFinite(n)) return false
+      const min = step.validation_rule?.startsWith('min:') ? Number(step.validation_rule.split(':')[1]) : null
+      const max = step.validation_rule?.startsWith('max:') ? Number(step.validation_rule.split(':')[1]) : null
+      return (min === null || n >= min) && (max === null || n <= max)
     }
     if (!step.required) return true
     if (localValue == null || localValue === '') return false
@@ -93,6 +143,7 @@ export function WorkflowStep({ step, value, onChange, onSubmit, submitting }: Wo
           {step.ai_guidance_enabled && (
             <span className="badge bg-indigo-50 text-indigo-600 border-indigo-100">IA</span>
           )}
+          {done && <span className="badge bg-emerald-50 text-emerald-700 border-emerald-100">Saisie enregistrée</span>}
           <span className="badge">{stepTypeLabel(step.step_type)}</span>
         </div>
       </div>
@@ -100,13 +151,71 @@ export function WorkflowStep({ step, value, onChange, onSubmit, submitting }: Wo
       <p className="text-sm text-slate-600 mb-1 leading-relaxed">{step.instruction}</p>
       {rule && <p className="text-xs text-slate-400 mb-2">Contrainte : {rule}</p>}
 
-      {step.step_type === 'text_input' && (
+      {(step.step_type === 'text_input' || step.step_type === 'knowledge_question') && (
         <textarea
           className="input min-h-[110px] mt-2"
           value={localValue ?? ''}
+          disabled={readOnly}
           onChange={(e) => handleChange(e.target.value)}
           placeholder="Saisissez votre réponse…"
         />
+      )}
+
+      {(step.step_type === 'number_input' || step.step_type === 'sensor_value') && (
+        <input
+          className="input mt-2 max-w-xs"
+          type="number"
+          step="any"
+          aria-label={step.step_type === 'sensor_value' ? 'Valeur mesurée' : 'Valeur numérique'}
+          value={localValue ?? ''}
+          disabled={readOnly}
+          onChange={(e) => handleChange(e.target.value === '' ? null : Number(e.target.value))}
+          placeholder={step.step_type === 'sensor_value' ? 'Valeur mesurée' : 'Saisissez un nombre'}
+        />
+      )}
+
+      {step.step_type === 'date' && (
+        <input
+          className="input mt-2 max-w-xs"
+          type="date"
+          aria-label="Date"
+          value={typeof localValue === 'string' ? localValue.slice(0, 10) : ''}
+          disabled={readOnly}
+          onChange={(e) => handleChange(e.target.value || null)}
+        />
+      )}
+
+      {(step.step_type === 'checkbox' || step.step_type === 'confirmation') && (
+        <label className="mt-3 flex items-center gap-3 p-3 border border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50">
+          <input
+            type="checkbox"
+            className="h-4 w-4 text-blue-600 focus:ring-blue-500"
+            checked={localValue === true}
+            disabled={readOnly}
+            onChange={(e) => handleChange(e.target.checked)}
+          />
+          <span className="text-sm text-slate-700">
+            {step.step_type === 'confirmation' ? 'Je confirme' : 'Case cochée'}
+          </span>
+        </label>
+      )}
+
+      {REFERENCE_STEPS[step.step_type] && (
+        <div className="mt-2">
+          <label className="label" htmlFor={`ref-${step.id}`}>{REFERENCE_STEPS[step.step_type].label}</label>
+          <input
+            id={`ref-${step.id}`}
+            className="input"
+            value={typeof localValue === 'string' ? localValue : ''}
+            disabled={readOnly}
+            onChange={(e) => handleChange(e.target.value)}
+            placeholder={REFERENCE_STEPS[step.step_type].placeholder}
+          />
+        </div>
+      )}
+
+      {step.step_type === 'instruction' && (
+        <p className="mt-2 text-xs text-slate-500">Étape d’information : lisez l’instruction, puis marquez-la comme lue.</p>
       )}
 
       {step.step_type === 'choice' && step.choices && (
@@ -126,6 +235,7 @@ export function WorkflowStep({ step, value, onChange, onSubmit, submitting }: Wo
                   type="radio"
                   name={`step-${step.id}`}
                   checked={active}
+                  disabled={readOnly}
                   onChange={() => pickChoice(c)}
                   className="h-4 w-4 text-blue-600 focus:ring-blue-500"
                 />
@@ -145,6 +255,7 @@ export function WorkflowStep({ step, value, onChange, onSubmit, submitting }: Wo
             id={`just-${step.id}`}
             className="input min-h-[90px]"
             value={justification}
+            disabled={readOnly}
             onChange={(e) => editJustification(e.target.value)}
             placeholder="Expliquez pourquoi ce choix est retenu…"
           />
@@ -159,10 +270,22 @@ export function WorkflowStep({ step, value, onChange, onSubmit, submitting }: Wo
         </p>
       )}
 
-      {(step.step_type === 'text_input' || step.step_type === 'choice') && (
+      {step.step_type !== 'approval' && !readOnly && (
         <div className="mt-4 flex items-center gap-3">
-          <Button onClick={onSubmit} disabled={!isValid() || submitting} loading={submitting}>
-            Soumettre l'étape
+          <Button
+            onClick={() => {
+              // Étape d'information : la valeur « lue » est posée au moment de la soumission
+              if (step.step_type === 'instruction') {
+                handleChange(true)
+                onSubmit(true)
+              } else {
+                onSubmit()
+              }
+            }}
+            disabled={!isValid() || submitting}
+            loading={submitting}
+          >
+            {step.step_type === 'instruction' ? 'Marquer comme lue' : "Soumettre l'étape"}
           </Button>
           {missing && (
             <span className="text-xs text-amber-600">

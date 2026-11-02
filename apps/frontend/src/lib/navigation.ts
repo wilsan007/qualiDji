@@ -28,10 +28,10 @@ export const NAV_ITEMS: NavItem[] = [
   { path: '/matrice', label: 'Matrice ISO', title: 'Matrice de traçabilité', screen: 'matrice', icon: Table2 },
   { path: '/workflows', label: 'Bibliothèque WF', title: 'Bibliothèque de workflows', screen: 'workflows', icon: LibraryBig, perm: 'workflow.read' },
   { path: '/users', label: 'Utilisateurs', title: 'Utilisateurs du tenant', screen: 'users', icon: Users2, perm: 'user.manage' },
-  { path: '/reports', label: 'Rapports', title: 'Rapports & préparation d’audit', screen: 'reports', icon: FileBarChart2, perm: 'action.approve' },
+  { path: '/reports', label: 'Rapports', title: 'Rapports & préparation d’audit', screen: 'reports', icon: FileBarChart2, anyPerm: ['action.approve', 'audit.export'] },
   { path: '/documents', label: 'Documents', title: 'Documents contrôlés', screen: 'documents', icon: FileText, perm: 'document.read' },
-  { path: '/audits', label: 'Audits internes', title: 'Audits internes', screen: 'audits', icon: ClipboardCheck, anyPerm: ['internal_audit.manage', 'internal_audit.respond'] },
-  { path: '/reviews', label: 'Revues direction', title: 'Revues de direction', screen: 'reviews', icon: CalendarCheck, perm: 'management_review.manage' },
+  { path: '/audits', label: 'Audits internes', title: 'Audits internes', screen: 'audits', icon: ClipboardCheck, anyPerm: ['internal_audit.manage', 'internal_audit.respond', 'internal_audit.read'] },
+  { path: '/reviews', label: 'Revues direction', title: 'Revues de direction', screen: 'reviews', icon: CalendarCheck, anyPerm: ['management_review.manage', 'management_review.read'] },
 ]
 
 const byPath = (pathname: string) => NAV_ITEMS.find((i) => i.path === pathname.replace(/\/$/, ''))

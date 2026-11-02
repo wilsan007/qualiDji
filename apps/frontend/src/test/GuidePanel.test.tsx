@@ -8,6 +8,7 @@ const { mockGuideApi } = vi.hoisted(() => ({ mockGuideApi: { get: vi.fn(), ask: 
 vi.mock('@/lib/api', () => ({ guideApi: mockGuideApi, GUIDE_REFRESH_EVENT: 'qualidji:data-changed' }))
 
 import { GuidePanel } from '@/components/GuidePanel'
+import { useAuthStore } from '@/stores/auth'
 import { NAV_ITEMS, pageTitle, screenForPath } from '@/lib/navigation'
 
 const QM_GUIDE = {
@@ -59,6 +60,19 @@ describe('GuidePanel', () => {
     vi.clearAllMocks()
     window.localStorage.clear()
     mockGuideApi.get.mockResolvedValue(QM_GUIDE)
+    // Responsable qualité : ouvre tous les écrans sauf Utilisateurs
+    useAuthStore.setState({
+      user: { id: 'u1', email: 'qm@test.local', role: 'quality_manager' },
+      permissions: ['action.approve', 'action.assign', 'audit.export', 'document.read', 'workflow.read', 'internal_audit.manage', 'management_review.manage'],
+      session: null,
+      isLoading: false,
+    })
+  })
+
+  it('ne demande pas de guide pour un écran fermé au rôle (pas de 403 inutile)', async () => {
+    renderAt('/users')
+    await new Promise((r) => setTimeout(r, 20))
+    expect(mockGuideApi.get).not.toHaveBeenCalled()
   })
 
   it('associe chaque chemin du menu à un écran', () => {

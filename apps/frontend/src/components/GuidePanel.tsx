@@ -7,7 +7,8 @@ import { guideApi, GuideAnswer, GuideResponse, GuideStep, GUIDE_REFRESH_EVENT } 
 import { errorMessage } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
-import { screenForPath } from '@/lib/navigation'
+import { screenForPath, NAV_ITEMS } from '@/lib/navigation'
+import { usePermissions } from '@/hooks/usePermissions'
 
 const COLLAPSE_KEY = 'qualidji-guide-collapsed'
 
@@ -37,7 +38,11 @@ function StepIcon({ step, index }: { step: GuideStep; index: number }) {
 export function GuidePanel() {
   const location = useLocation()
   const target = screenForPath(location.pathname)
-  const screen = target?.screen ?? null
+  const { has } = usePermissions()
+  // Écran fermé au rôle (le routeur renvoie au tableau de bord) : pas de requête de guide, donc pas de 403 inutile.
+  const item = NAV_ITEMS.find((i) => i.screen === target?.screen)
+  const closed = Boolean(item && ((item.perm && !has(item.perm)) || (item.anyPerm && !item.anyPerm.some((p) => has(p)))))
+  const screen = closed ? null : target?.screen ?? null
   const actionId = target?.actionId ?? null
 
   const [data, setData] = useState<GuideResponse | null>(null)

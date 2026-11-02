@@ -108,6 +108,12 @@ export default function Dashboard() {
         ))}
       </div>
 
+      {actions.length >= 50 && (
+        <p className="text-xs text-slate-500 -mt-3">
+          Compteurs et liste calculés sur les 50 actions les plus récentes — « Ouvrir mes actions » donne accès à la suite.
+        </p>
+      )}
+
       {error && <ErrorState message={error} onRetry={load} />}
 
       {/* Liste des actions */}

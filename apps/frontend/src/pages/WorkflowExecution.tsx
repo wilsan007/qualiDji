@@ -4,13 +4,14 @@ import { actionsApi, stepsApi } from '@/lib/api'
 import { WorkflowStep } from '@/components/WorkflowStep'
 import { AIGuidancePanel } from '@/components/AIGuidancePanel'
 import { EvidenceUploader } from '@/components/EvidenceUploader'
+import { ActionsList } from '@/components/ActionsList'
 import { ReassignControl } from '@/components/AssignAction'
 import { Button } from '@/components/ui/Button'
 import { usePermissions } from '@/hooks/usePermissions'
 import { PageLoader, ErrorState } from '@/components/ui/States'
 import { statusBadge, statusLabel, formatDate, formatDateTime, errorMessage } from '@/lib/format'
 import type { Action, WorkflowStep as WStep } from '@/types'
-import { ArrowLeft, Sparkles, ShieldAlert, FileText, User2, Info, CheckCircle2, RotateCcw } from 'lucide-react'
+import { ArrowLeft, Sparkles, ShieldAlert, User2, Info, CheckCircle2, RotateCcw } from 'lucide-react'
 
 /** Modale de déclaration d'exception → crée une non-conformité et bloque l'action. */
 function ExceptionModal({ open, onClose, onConfirm, saving }: {
@@ -88,7 +89,8 @@ export default function WorkflowExecution() {
   const [values, setValues] = useState<Record<string, any>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [openStep, setOpenStep] = useState<string | null>(null)
+  // Étapes dont le panneau « Preuves & guidage IA » est déplié
+  const [openPanels, setOpenPanels] = useState<Set<string>>(new Set())
   const [error, setError] = useState('')
   const [exceptionOpen, setExceptionOpen] = useState(false)
   const [reviewComment, setReviewComment] = useState('')
@@ -96,6 +98,8 @@ export default function WorkflowExecution() {
   // (rôle d'approbateur de la définition + ségrégation des tâches).
   const { has } = usePermissions()
   const canReview = has('action.approve')
+  const canExecute = has('action.execute')
+  const canUpload = has('evidence.upload')
 
   useEffect(() => {
     if (!actionId) {
@@ -127,12 +131,19 @@ export default function WorkflowExecution() {
     setValues((prev) => ({ ...prev, [stepId]: value }))
   }
 
-  const handleSubmitStep = async (step: WStep) => {
+  const togglePanel = (stepId: string) =>
+    setOpenPanels((prev) => {
+      const next = new Set(prev)
+      if (next.has(stepId)) next.delete(stepId)
+      else next.add(stepId)
+      return next
+    })
+
+  const handleSubmitStep = async (step: WStep, override?: any) => {
     setSaving(true)
     setError('')
     try {
-      await stepsApi.submit(actionId!, step.id, values[step.id])
-      setOpenStep(null)
+      await stepsApi.submit(actionId!, step.id, override !== undefined ? override : values[step.id])
       await refresh()
     } catch (e) {
       setError(errorMessage(e))
@@ -185,29 +196,8 @@ export default function WorkflowExecution() {
 
   if (loading) return <PageLoader label="Chargement du workflow…" />
 
-  // Aucune action sélectionnée → guider vers le tableau de bord
-  if (!actionId) {
-    return (
-      <div className="max-w-3xl mx-auto">
-        <div className="card empty-state">
-          <div className="w-14 h-14 rounded-full bg-blue-50 flex items-center justify-center mb-3">
-            <FileText className="w-7 h-7 text-blue-600" />
-          </div>
-          <p className="text-sm font-medium text-slate-800">Sélectionnez une action à réaliser</p>
-          <p className="text-xs text-slate-500 mt-1 max-w-sm">
-            Ouvrez une action depuis votre tableau de bord pour suivre les étapes, générer le
-            guidage IA et joindre vos preuves terrain.
-          </p>
-          <Link
-            to="/dashboard"
-            className="mt-4 inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium transition-colors"
-          >
-            <ArrowLeft className="w-4 h-4" /> Aller au tableau de bord
-          </Link>
-        </div>
-      </div>
-    )
-  }
+  // Aucune action sélectionnée → la liste « Mes actions »
+  if (!actionId) return <ActionsList />
 
   if (!action) {
     return <ErrorState message={error || 'Action introuvable.'} />
@@ -310,35 +300,55 @@ export default function WorkflowExecution() {
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <div className="lg:col-span-8 space-y-4">
-          {steps.map((step) => (
-            <div
-              key={step.id}
-              className={`card overflow-hidden transition ${openStep === step.id ? 'border-blue-300 ring-1 ring-blue-200' : ''}`}
-            >
-              <WorkflowStep
-                step={step}
-                value={values[step.id]}
-                onChange={(v) => handleStepChange(step.id, v)}
-                onSubmit={() => {
-                  setOpenStep(step.id)
-                  handleSubmitStep(step)
-                }}
-                submitting={saving}
-              />
-              {openStep === step.id && (
-                <div className="px-5 pb-5 animate-fade-in">
-                  <AIGuidancePanel
-                    actionId={actionId!}
-                    stepId={step.id}
-                    onSuggestion={(instruction) => {
-                      setValues((prev) => ({ ...prev, [step.id]: instruction }))
-                    }}
-                  />
-                  <EvidenceUploader actionId={actionId!} stepId={step.id} />
-                </div>
-              )}
-            </div>
-          ))}
+          {steps.map((step) => {
+            const panelOpen = openPanels.has(step.id)
+            const done = (action.step_submissions ?? []).some((sub: any) => sub.step_id === step.id)
+            return (
+              <div
+                key={step.id}
+                className={`card overflow-hidden transition ${panelOpen ? 'border-blue-300 ring-1 ring-blue-200' : ''}`}
+              >
+                <WorkflowStep
+                  step={step}
+                  value={values[step.id]}
+                  onChange={(v) => handleStepChange(step.id, v)}
+                  onSubmit={(v) => handleSubmitStep(step, v)}
+                  submitting={saving}
+                  done={done}
+                  readOnly={!canEdit || !canExecute}
+                />
+                {step.step_type !== 'approval' && (
+                  <div className="px-5 pb-4 -mt-1">
+                    <button
+                      type="button"
+                      onClick={() => togglePanel(step.id)}
+                      aria-expanded={panelOpen}
+                      className="text-xs font-medium text-blue-600 hover:text-blue-800"
+                    >
+                      {panelOpen ? 'Masquer les preuves' : canEdit && canExecute ? 'Preuves & guidage IA' : 'Voir les preuves'}
+                    </button>
+                  </div>
+                )}
+                {panelOpen && (
+                  <div className="px-5 pb-5 animate-fade-in">
+                    {canEdit && canExecute && (
+                      <AIGuidancePanel
+                        // L'API du guidage attend l'identifiant de la DÉFINITION d'action (workflow_actions), pas celui de l'exécution
+                        actionId={action.action_def_id}
+                        stepId={step.id}
+                        onSuggestion={(instruction) => {
+                          if (step.step_type === 'text_input' || step.step_type === 'knowledge_question') {
+                            setValues((prev) => ({ ...prev, [step.id]: instruction }))
+                          }
+                        }}
+                      />
+                    )}
+                    <EvidenceUploader actionId={actionId!} stepId={step.id} readOnly={!(canEdit && canUpload)} />
+                  </div>
+                )}
+              </div>
+            )
+          })}
 
           {canEdit && steps.length > 0 && (
             <div className="flex flex-wrap gap-3 pt-2">
@@ -369,7 +379,7 @@ export default function WorkflowExecution() {
               <div className="flex justify-between gap-2">
                 <dt className="text-slate-400">Assignée à</dt>
                 <dd className="flex items-center gap-1">
-                  <User2 className="w-3.5 h-3.5" /> {action.assigned_to ? action.assigned_to.slice(0, 8) : '—'}
+                  <User2 className="w-3.5 h-3.5" /> {action.assignee?.display_name || action.assignee?.email || (action.assigned_to ? action.assigned_to.slice(0, 8) : '—')}
                 </dd>
               </div>
               <div className="flex justify-between gap-2">
@@ -390,6 +400,7 @@ export default function WorkflowExecution() {
             )}
           </div>
 
+          {canExecute && (
           <div className="card p-4 bg-gradient-to-br from-indigo-50 to-white">
             <h3 className="text-sm font-semibold text-slate-900 mb-2 flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-indigo-500" /> Guidage IA
@@ -402,25 +413,28 @@ export default function WorkflowExecution() {
               Ouvrez une étape pour générer son guidage détaillé.
             </p>
           </div>
+          )}
 
-          <div className="card p-4">
-            <h3 className="text-sm font-semibold text-slate-900 mb-2 flex items-center gap-2">
-              <ShieldAlert className="w-4 h-4 text-red-500" /> Non-conformité
-            </h3>
-            <p className="text-xs text-slate-500 leading-relaxed mb-3">
-              Un écart bloquant sur le terrain ? Déclarez-le : une NC sera créée et l'action
-              sera gelée jusqu'au traitement CAPA.
-            </p>
-            <Button
-              size="sm"
-              variant="outline"
-              className="w-full"
-              onClick={() => setExceptionOpen(true)}
-              disabled={!canEdit}
-            >
-              Déclarer une exception
-            </Button>
-          </div>
+          {(canExecute || canReview) && (
+            <div className="card p-4">
+              <h3 className="text-sm font-semibold text-slate-900 mb-2 flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-red-500" /> Non-conformité
+              </h3>
+              <p className="text-xs text-slate-500 leading-relaxed mb-3">
+                Un écart bloquant sur le terrain ? Déclarez-le : une NC sera créée et l'action
+                sera gelée jusqu'au traitement CAPA.
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-full"
+                onClick={() => setExceptionOpen(true)}
+                disabled={!canEdit}
+              >
+                Déclarer une exception
+              </Button>
+            </div>
+          )}
         </div>
       </div>
     </div>
