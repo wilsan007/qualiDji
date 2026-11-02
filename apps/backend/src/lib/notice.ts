@@ -27,7 +27,7 @@ export const NOTICE_SECTIONS: NoticeSection[] = [
       'Le responsable qualité (QM) lance et assigne les actions, valide ou rejette le travail, traite NC et CAPA, approuve les documents, pilote audits et revues de direction. ' +
       "Le responsable de processus (PO) et l'opérateur réalisent les actions assignées, joignent les preuves, déclarent les écarts et répondent aux constats d'audit. " +
       "L'auditeur interne planifie et conduit les audits internes. Les responsables de site ou de département assignent, exécutent et valident dans leur périmètre. " +
-      "Le consultant rédige workflows et documents et assigne des actions, sans valider. L'auditeur externe et le lecteur consultent seulement. " +
+      "Le consultant rédige workflows et documents (il voit ses propres brouillons) et assigne des actions, sans valider. L'auditeur externe consulte tout le dossier en lecture seule (journal, rapports, audits internes, revues, actions et preuves) ; le lecteur consulte les écrans communs. " +
       'Socle commun à tous : Tableau de bord, Mes actions, Non-conformités, Matrice ISO.',
   },
   {
@@ -38,7 +38,8 @@ export const NOTICE_SECTIONS: NoticeSection[] = [
     text:
       'Menu Utilisateurs → bloc Inviter un utilisateur : saisir l\'e-mail professionnel, choisir le rôle, indiquer le nom affiché, puis Envoyer l\'invitation. ' +
       "Il faut au minimum un QM et un PO pour faire tourner une action, car personne ne valide son propre travail. Équipe de départ conseillée : 1 responsable qualité, 1 responsable de processus par processus clé, 1 auditeur interne distinct du QM. " +
-      'Changer de rôle ou de nom : modifier la ligne et donner un motif (historique conservé). Suspendre coupe immédiatement les sessions ; Réactiver la rétablit. ' +
+      "L'invité reçoit un e-mail : le lien (à usage unique) ouvre la page « Choisissez votre mot de passe » (12 caractères minimum) ; en cas d'oubli, « Mot de passe oublié ? » sur la page de connexion. " +
+      "Changer de rôle : choisir le nouveau rôle dans la ligne, saisir le motif (obligatoire) puis Confirmer le changement ; l'historique est conservé et personne ne modifie son propre rôle. Suspendre coupe immédiatement les sessions ; Réactiver la rétablit. " +
       "Un compte n'est jamais supprimé : ses traces d'audit restent rattachées à une personne.",
   },
   {
@@ -119,7 +120,7 @@ export const NOTICE_SECTIONS: NoticeSection[] = [
     text:
       'Une NC est créée automatiquement quand un PO déclare une exception, ou manuellement par le QM : Nouvelle non-conformité, titre de l\'écart, gravité, Créer la NC. ' +
       'Traiter (QM ou Admin) : ouvrir la NC, Lancer un plan CAPA (cause racine, action corrective, responsable, échéance), Enregistrer le CAPA. ' +
-      'Suivre les CAPA en retard dans Rapports. La vérification d\'efficacité n\'a pas encore de bouton : la consigner en revue de direction.',
+      "Une fois l'action corrective réalisée : ouvrir la NC, saisir le constat de la vérification puis Efficacité vérifiée (la NC est clôturée) ou Inefficace — rouvrir (la NC repasse en traitement ; commentaire obligatoire). Suivre les CAPA en retard dans Rapports.",
   },
   {
     id: '8',
@@ -169,7 +170,7 @@ export const NOTICE_SECTIONS: NoticeSection[] = [
     keywords: ['prêt audit', 'journal', 'auditeur externe', 'préparer'],
     text:
       'Ouvrir Prêt audit : le journal d\'audit liste chaque événement avec auteur et date. Dans la Matrice ISO, viser zéro lacune bloquante puis Exporter (CSV). ' +
-      'Remettre à l\'auditeur la matrice, le CSV NC/CAPA et le paquet d\'audit ; un compte Auditeur externe en lecture seule peut lui être ouvert.',
+      "Remettre à l'auditeur la matrice, le CSV NC/CAPA, le journal complet (CSV) et le paquet d'audit ; ou lui ouvrir un compte Auditeur externe : il consulte en lecture seule le journal, les rapports, les audits internes, les revues de direction, les actions et leurs preuves (vérification d'empreinte, téléchargement).",
   },
   {
     id: '11',

@@ -67,6 +67,11 @@ function canSeeDrafts(req: AuthedRequest): boolean {
   return isPlatformAdmin(req) || (req.permissions?.has('document.approve') ?? false)
 }
 
+/** Auteurs (consultant, responsables…) : peuvent créer/éditer des brouillons, donc doivent les voir. */
+function canAuthor(req: AuthedRequest): boolean {
+  return (req.permissions?.has('document.create') ?? false) || (req.permissions?.has('document.edit_draft') ?? false)
+}
+
 /** Contenu confidentiel/secret : approbateurs, rôle propriétaire du document, auteur. */
 function canReadRestricted(req: AuthedRequest, doc: any): boolean {
   return canSeeDrafts(req) || doc.owner_role === req.user?.role || doc.created_by === req.user?.id
@@ -93,7 +98,7 @@ async function loadDocument(id: string, req: AuthedRequest, res: any) {
     res.status(404).json({ error: 'document not found' })
     return null
   }
-  if (doc.status !== 'published' && !canSeeDrafts(req)) {
+  if (doc.status !== 'published' && !canSeeDrafts(req) && doc.created_by !== req.user?.id) {
     res.status(403).json({ error: 'missing permission: document.approve', code: 'ERR_PERMISSION_DENIED' })
     return null
   }
@@ -119,7 +124,7 @@ async function transition(id: string, from: string, patch: Record<string, unknow
 // ── Liste du registre (published par défaut) ────────────────────────────────
 router.get('/', requireAuth, requireTenant, requirePermission('document.read'), async (req: AuthedRequest, res) => {
   const includeAll = req.query.include_all === '1'
-  if (includeAll && !canSeeDrafts(req)) {
+  if (includeAll && !canSeeDrafts(req) && !canAuthor(req)) {
     return res.status(403).json({ error: 'missing permission: document.approve', code: 'ERR_PERMISSION_DENIED' })
   }
   let query = supabaseAdmin
@@ -128,6 +133,8 @@ router.get('/', requireAuth, requireTenant, requirePermission('document.read'), 
     .eq('tenant_id', req.user!.tenant_id!)
     .order('title')
   if (!includeAll) query = query.eq('status', 'published')
+  // Un auteur sans droit d'approbation voit les documents publiés + SES brouillons/revues (jamais ceux des autres).
+  else if (!canSeeDrafts(req)) query = query.or(`status.eq.published,created_by.eq.${req.user!.id}`)
   const { data, error } = await query
   if (error) return dbFail(res, error, 'documents.list', 500)
   const documents = (data ?? []).map((d) => applyClassification(req, d)).filter(Boolean)

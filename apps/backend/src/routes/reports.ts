@@ -133,7 +133,7 @@ export async function loadNcCapaReport(tenantId: string) {
       capa_responsible: capa?.responsible ?? null,
       capa_due_date: capa?.due_date ?? null,
       capa_status: capa?.status ?? null,
-      capa_overdue: Boolean(capa?.due_date) && new Date(capa.due_date) < new Date() && capa?.status === 'open',
+      capa_overdue: Boolean(capa?.due_date) && new Date(capa.due_date) < new Date() && (capa?.status === 'open' || capa?.status === 'reopened'),
       effectiveness: capa?.effectiveness_result ?? null,
     }
   })
@@ -277,6 +277,36 @@ router.get('/nc-capa.csv', requireAuth, requireTenant, requirePermission('audit.
       ],
       ['id', 'titre', 'gravite', 'statut', 'cree_le', 'anciennete_jours', 'declare_par', 'cause_racine', 'action_corrective', 'responsable_capa', 'echeance_capa', 'statut_capa', 'capa_en_retard', 'efficacite'],
       report.rows.map((r) => [r.id, r.title, r.severity, r.status, r.created_at, r.age_days, r.declared_by, r.capa_root_cause, r.capa_corrective_action, r.capa_responsible, r.capa_due_date, r.capa_status, r.capa_overdue ? 'OUI' : 'non', r.effectiveness])
+    )
+  } catch (e: any) {
+    reportFail(res, e)
+  }
+})
+
+// Journal d'audit complet (traces non modifiables) — pour l'auditeur qui veut tout le journal, pas les 100 derniers événements
+router.get('/audit-log.csv', requireAuth, requireTenant, requirePermission('audit.export'), async (req: AuthedRequest, res) => {
+  try {
+    const tenantId = req.user!.tenant_id!
+    const { rows, truncated } = await fetchAll<any>((from, to) =>
+      supabaseAdmin
+        .from('audit_log')
+        .select('id, actor_id, action, entity, entity_id, payload, created_at')
+        .eq('tenant_id', tenantId)
+        .order('created_at', { ascending: true })
+        .order('id')
+        .range(from, to))
+    const emails = await emailsById()
+    await auditFromReq(req, 'report.export', 'report', 'audit-log.csv', { rows: rows.length, truncated })
+    sendCsv(
+      res,
+      `journal_audit_${new Date().toISOString().slice(0, 10)}.csv`,
+      [
+        `# Journal d'audit — extraction ${new Date().toISOString()}`,
+        `# Exporté par : ${req.user!.email ?? req.user!.id} (tenant ${tenantId})`,
+        `# Filtres appliqués : aucun (journal complet, ordre chronologique)${truncated ? ' — TRONQUÉ (limite d\'extraction atteinte)' : ''}`,
+      ],
+      ['date', 'acteur', 'action', 'entite', 'id_entite', 'details'],
+      rows.map((r) => [r.created_at, r.actor_id ? (emails.get(r.actor_id) ?? r.actor_id) : 'système', r.action, r.entity, r.entity_id, r.payload ? JSON.stringify(r.payload) : '']),
     )
   } catch (e: any) {
     reportFail(res, e)

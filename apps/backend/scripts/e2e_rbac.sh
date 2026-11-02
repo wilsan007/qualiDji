@@ -164,7 +164,39 @@ if [ "$CODE" = "oui" ]; then
 else
   FAIL=$((FAIL + 1)); echo "  ✗ GET /nonconformities : nc.capa absent (le formulaire CAPA se réaffiche à l'infini)"
 fi
+ncfield() { curl -s -m 20 "$API_URL/nonconformities" -H "Authorization: Bearer $QM_TOKEN" | python3 -c "import sys,json;r=[n for n in json.load(sys.stdin).get('nonconformities',[]) if n['id']=='$1'];print((r[0].get('$2') if r else None) or '')"; }
+if [ "$(ncfield "$NC_ID" status)" = "in_progress" ]; then
+  PASS=$((PASS + 1)); echo "  ✓ NC → in_progress dès que le plan CAPA est enregistré"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ NC : statut attendu in_progress après création du CAPA, reçu '$(ncfield "$NC_ID" status)'"
+fi
 check 'QM effectiveness-check (efficace) → 200 verified'       200        "$QM_TOKEN"  POST "/nonconformities/capas/$CAPA_ID/effectiveness-check" '{"effective":true,"comments":"effective"}'
+if [ "$(ncfield "$NC_ID" status)" = "closed" ] && [ -n "$(ncfield "$NC_ID" closed_at)" ]; then
+  PASS=$((PASS + 1)); echo "  ✓ CAPA efficace → NC clôturée (closed_at renseigné)"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ NC : clôture attendue après CAPA efficace, reçu '$(ncfield "$NC_ID" status)'"
+fi
+if [ "$(curl -s -m 20 "$API_URL/nonconformities" -H "Authorization: Bearer $QM_TOKEN" | python3 -c "import sys,json;r=[n for n in json.load(sys.stdin).get('nonconformities',[]) if n['id']=='$NC_ID'];c=(r[0].get('capa') or {}) if r else {};print(c.get('effectiveness_result'),c.get('effectiveness_comments'))")" = "effective effective" ]; then
+  PASS=$((PASS + 1)); echo "  ✓ CAPA : résultat normalisé 'effective' + commentaire conservé à part"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ CAPA : effectiveness_result / effectiveness_comments incorrects"
+fi
+check 'QM POST /nonconformities (2e, CAPA inefficace) → 201'    201        "$QM_TOKEN"  POST /nonconformities '{"title":"E2E NC CAPA inefficace","severity":"major"}'
+NC2_ID=$(pyget nonconformity.id)
+check 'QM POST /nonconformities/<2e>/capa → 201'                201        "$QM_TOKEN"  POST "/nonconformities/$NC2_ID/capa" '{"root_cause":"cause 2","corrective_action":"action 2","responsible":"Resp 2"}'
+CAPA2_ID=$(pyget capa.id)
+check 'QM effectiveness-check (inefficace) → 200 reopened'      200        "$QM_TOKEN"  POST "/nonconformities/capas/$CAPA2_ID/effectiveness-check" '{"effective":false,"comments":"toujours en écart"}'
+if [ "$(ncfield "$NC2_ID" status)" = "in_progress" ] && [ -z "$(ncfield "$NC2_ID" closed_at)" ]; then
+  PASS=$((PASS + 1)); echo "  ✓ CAPA inefficace → NC repasse/reste en traitement (non clôturée)"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ NC : devrait rester in_progress après CAPA inefficace, reçu '$(ncfield "$NC2_ID" status)'"
+fi
+if [ "$(curl -s -m 20 "$API_URL/reports/nc-capa" -H "Authorization: Bearer $QM_TOKEN" | python3 -c "import sys,json;print(json.load(sys.stdin)['computed']['effectiveness_ineffective']>=1)")" = "True" ]; then
+  PASS=$((PASS + 1)); echo "  ✓ rapport NC/CAPA : la CAPA inefficace est comptée (effectiveness_ineffective)"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ rapport NC/CAPA : effectiveness_ineffective ne compte pas la CAPA inefficace"
+fi
+check 'OP POST effectiveness-check → 403 capa.close'            403        "$OP_TOKEN"  POST "/nonconformities/capas/$CAPA2_ID/effectiveness-check" '{"effective":true}'
 CODE=$(curl -s -m 20 "$API_URL/reports/nc-capa" -H "Authorization: Bearer $QM_TOKEN" | python3 -c "import sys,json;r=[x for x in json.load(sys.stdin).get('rows',[]) if x['id']=='$NC_ID'];print('oui' if r and r[0]['capa_responsible']=='Resp E2E' and r[0]['capa_due_date']=='2030-12-31' and r[0]['capa_status']=='verified' else 'non')" 2>/dev/null)
 if [ "$CODE" = "oui" ]; then
   PASS=$((PASS + 1)); echo "  ✓ registre /reports/nc-capa : responsable, échéance et statut CAPA remplis"
@@ -368,11 +400,14 @@ check 'TA POST /users/invite rôle plateforme → 400'        400       "$TA_TOK
 E2E_MEMBER_UID=$(curl -s -m 20 "$API_URL/users" -H "Authorization: Bearer $TA_TOKEN" | python3 -c "import sys,json;us=json.load(sys.stdin).get('users',[]);print(next((u['id'] for u in us if u['email']=='e2e.member@qualidji.fr'),''))" 2>/dev/null)
 if [ -n "$E2E_MEMBER_UID" ]; then
   check 'TA PATCH rôle membre → 200 (historique)'          200       "$TA_TOKEN"  PATCH "/users/$E2E_MEMBER_UID" '{"role":"department_manager","reason":"E2E"}'
+  check 'TA PATCH rôle sans motif → 400 ERR_REASON_REQUIRED'  400       "$TA_TOKEN"  PATCH "/users/$E2E_MEMBER_UID" '{"role":"site_manager"}'
+  TA_SELF_UID=$(curl -s -m 20 "$API_URL/users" -H "Authorization: Bearer $TA_TOKEN" | python3 -c "import sys,json;print(next((u['id'] for u in json.load(sys.stdin).get('users',[]) if u['email']=='$RBAC_TA_EMAIL'),''))")
+  check 'TA PATCH son propre rôle → 409'                     409       "$TA_TOKEN"  PATCH "/users/$TA_SELF_UID" '{"role":"quality_manager","reason":"E2E auto-changement"}'
   check 'TA GET membre → 200 + role_history'               200       "$TA_TOKEN"  GET "/users/$E2E_MEMBER_UID"
   check 'TA deactivate membre → 200 (sessions révoquées)'  200       "$TA_TOKEN"  POST "/users/$E2E_MEMBER_UID/deactivate" '{}'
   check 'TA activate membre → 200'                         200       "$TA_TOKEN"  POST "/users/$E2E_MEMBER_UID/activate" '{}'
   # Nettoyage : restauration du rôle reader (reste actif)
-  curl -s -m 20 -X PATCH "$API_URL/users/$E2E_MEMBER_UID" -H "Authorization: Bearer $TA_TOKEN" -H 'Content-Type: application/json' -d '{"role":"reader"}' > /dev/null
+  curl -s -m 20 -X PATCH "$API_URL/users/$E2E_MEMBER_UID" -H "Authorization: Bearer $TA_TOKEN" -H 'Content-Type: application/json' -d '{"role":"reader","reason":"E2E remise en état"}' > /dev/null
 else
   FAIL=$((FAIL + 4)); echo "  ✗ 4 checks §3.4 ignorés (e2e.member@qualidji.fr introuvable)"
 fi

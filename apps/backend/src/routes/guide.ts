@@ -161,6 +161,9 @@ async function loadDocuments(tenantId: string, userId: string): Promise<NonNulla
   }
 }
 
+/** CAPA dont l'efficacité n'est pas (ou plus) vérifiée : plan ouvert, ou réouvert après une vérification négative. */
+const PENDING_CAPA = ['open', 'reopened']
+
 async function loadNc(tenantId: string): Promise<NonNullable<GuideFacts['nc']>> {
   const [ncs, capas] = await Promise.all([
     all<{ id: string; status: string }>((a, b) =>
@@ -174,7 +177,8 @@ async function loadNc(tenantId: string): Promise<NonNullable<GuideFacts['nc']>> 
   return {
     open: open.length,
     withoutCapa: open.filter((n) => !withCapa.has(n.id)).length,
-    capaOverdue: capas.filter((c) => c.status === 'open' && c.due_date && c.due_date < today).length,
+    capaOverdue: capas.filter((c) => PENDING_CAPA.includes(c.status) && c.due_date && c.due_date < today).length,
+    capaToVerify: capas.filter((c) => PENDING_CAPA.includes(c.status)).length,
   }
 }
 
